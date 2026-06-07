@@ -4,51 +4,144 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Every frame an INR</title>
-  <link rel="icon" href="data:,">
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
   <main class="shell">
     <header class="topbar">
       <h1>Every frame an INR</h1>
+      <code id="device-value">--</code>
     </header>
 
     <section class="lab-grid" aria-label="Interactive INR workspace">
-      <div class="preview-grid">
-        <figure class="image-panel reference-panel">
-          <figcaption>
-            <span>Reference</span>
-            <code id="reference-meta">256 x 256</code>
-          </figcaption>
-          <div class="image-frame">
-            <canvas id="reference-canvas" width="256" height="256" aria-label="Reference target image"></canvas>
-          </div>
-        </figure>
+      <div class="preview-column">
+        <div class="preview-grid">
+          <figure class="image-panel reference-panel">
+            <figcaption>
+              <span>Reference</span>
+              <code id="reference-meta">256 x 256</code>
+            </figcaption>
+            <div class="image-frame">
+              <canvas id="reference-canvas" width="256" height="256" aria-label="Reference target image"></canvas>
+            </div>
+          </figure>
 
-        <figure class="image-panel output-panel">
-          <figcaption>
-            <span>INR output</span>
-            <code id="output-meta">epoch 0</code>
-          </figcaption>
-          <div class="image-frame">
-            <canvas id="latest-canvas" width="256" height="256" aria-label="Latest INR output"></canvas>
-          </div>
-        </figure>
+          <figure class="image-panel output-panel">
+            <figcaption>
+              <span>INR output</span>
+              <code id="output-meta">epoch 0</code>
+            </figcaption>
+            <div class="image-frame">
+              <canvas id="latest-canvas" width="256" height="256" aria-label="Latest INR output"></canvas>
+            </div>
+          </figure>
+        </div>
+
+        <div class="control-strip">
+          <button id="start-button" class="primary-button expressive-button" type="button">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8 5v14l11-7z"/>
+            </svg>
+            <span>Start</span>
+          </button>
+          <button id="stop-button" class="expressive-button" type="button">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 7h10v10H7z"/>
+            </svg>
+            <span>Stop</span>
+          </button>
+          <button id="step-button" class="expressive-button" type="button">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 5v14l9-7-9-7zm11 0h2v14h-2z"/>
+            </svg>
+            <span>Step</span>
+          </button>
+          <button id="reset-button" class="expressive-button" type="button">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5a7 7 0 1 1-6.3 4H3l4-4 4 4H8.2A4.8 4.8 0 1 0 12 7.2V5z"/>
+            </svg>
+            <span>Reset</span>
+          </button>
+        </div>
       </div>
 
       <aside class="side-panel" aria-label="Controls and metrics">
-        <section class="image-picker-field" aria-label="Target image">
-          <span>Target image</span>
+        <section class="media-picker-field" aria-label="Target media">
+          <span>Target</span>
           <button id="webcam-button" class="webcam-button" type="button">Use webcam</button>
-          <div class="image-picker" id="image-picker"></div>
+          <div class="media-picker" id="media-picker"></div>
         </section>
 
-        <div class="control-strip">
-          <button id="start-button" class="primary-button" type="button">Start continuous</button>
-          <button id="stop-button" type="button">Stop</button>
-          <button id="step-button" type="button">Step</button>
-          <button id="reset-button" type="button">Reset</button>
-        </div>
+        <section class="model-field" aria-label="Model">
+          <button id="model-toggle" class="model-toggle" type="button" aria-expanded="false" aria-controls="model-advanced">
+            <span>Model</span>
+            <code id="model-summary">--</code>
+            <svg class="caret-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m7 10 5 5 5-5"/>
+            </svg>
+          </button>
+          <div class="model-picker" id="model-picker" role="radiogroup" aria-label="Model presets"></div>
+          <div class="model-advanced" id="model-advanced" aria-hidden="true">
+            <label class="setting-row" for="hidden-dim-select">
+              <span>Hidden dim</span>
+              <select id="hidden-dim-select">
+                <option value="64">64</option>
+                <option value="128">128</option>
+                <option value="256">256</option>
+                <option value="384">384</option>
+                <option value="512">512</option>
+              </select>
+            </label>
+            <label class="setting-row" for="hidden-layers-select">
+              <span>Hidden layers</span>
+              <select id="hidden-layers-select">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+              </select>
+            </label>
+            <label class="setting-row" for="feature-dim-select">
+              <span>Features</span>
+              <select id="feature-dim-select">
+                <option value="64">64</option>
+                <option value="128">128</option>
+                <option value="192">192</option>
+                <option value="256">256</option>
+                <option value="384">384</option>
+                <option value="512">512</option>
+              </select>
+            </label>
+            <label class="setting-row" for="feature-type-select">
+              <span>Feature type</span>
+              <select id="feature-type-select">
+                <option value="fourier">Fourier</option>
+                <option value="gabor">Gabor</option>
+              </select>
+            </label>
+            <label class="setting-row toggle-row" for="layernorm-toggle">
+              <span>LayerNorm</span>
+              <input id="layernorm-toggle" type="checkbox">
+            </label>
+            <label class="lr-row" for="image-start-lr-slider">
+              <span>Image start LR</span>
+              <input id="image-start-lr-slider" type="range" min="-4.3" max="-1.3" step="0.01">
+              <code id="image-start-lr-value">--</code>
+            </label>
+            <label class="lr-row" for="image-end-lr-slider">
+              <span>Image end LR</span>
+              <input id="image-end-lr-slider" type="range" min="-4.3" max="-1.3" step="0.01">
+              <code id="image-end-lr-value">--</code>
+            </label>
+            <label class="lr-row" for="video-lr-slider">
+              <span>Video LR</span>
+              <input id="video-lr-slider" type="range" min="-4.3" max="-1.3" step="0.01">
+              <code id="video-lr-value">--</code>
+            </label>
+          </div>
+        </section>
 
         <label class="slider-row" for="epoch-slider">
           <span>Epochs per preview</span>
@@ -70,8 +163,16 @@
             <strong id="psnr-value">--</strong>
           </article>
           <article class="metric-tile">
-            <span>Device</span>
-            <strong id="device-value">--</strong>
+            <span>Learning rate</span>
+            <strong id="learning-rate-value">--</strong>
+          </article>
+          <article class="metric-tile stream-metric">
+            <span>Avg loss</span>
+            <strong id="avg-loss-value">--</strong>
+          </article>
+          <article class="metric-tile stream-metric">
+            <span>Avg PSNR</span>
+            <strong id="avg-psnr-value">--</strong>
           </article>
         </section>
 
@@ -81,7 +182,7 @@
             <code id="timing-value">--</code>
           </div>
           <div class="chart-canvas-wrap">
-            <canvas id="loss-chart" width="720" height="250"></canvas>
+            <canvas id="loss-chart" width="720" height="196"></canvas>
             <div class="chart-empty" id="chart-empty" aria-hidden="true">
               <svg viewBox="0 0 96 72" role="img">
                 <path d="M16 48c10-22 18-26 28-12s18 20 36-14" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>

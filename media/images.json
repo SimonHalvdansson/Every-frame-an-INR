@@ -1,70 +1,142 @@
 {
-  "images": [
+  "media": [
     {
-      "name": "image.png",
-      "displayName": "Harmonic screenshot",
-      "src": "media/targets/harmonic-screenshot.webp",
-      "thumb": "media/thumbs/harmonic-screenshot.webp"
-    },
-    {
-      "name": "google-deepmind-2ufXB-oAyG0-unsplash.jpg",
+      "kind": "image",
+      "name": "code-domes",
       "displayName": "Code domes",
       "src": "media/targets/code-domes.webp",
       "thumb": "media/thumbs/code-domes.webp"
     },
     {
-      "name": "google-deepmind-37x7-sBhwf8-unsplash.jpg",
+      "kind": "image",
+      "name": "white-flight-paths",
       "displayName": "White flight paths",
       "src": "media/targets/white-flight-paths.webp",
       "thumb": "media/thumbs/white-flight-paths.webp"
     },
     {
-      "name": "google-deepmind-Fv39DqWqtHw-unsplash.jpg",
+      "kind": "image",
+      "name": "glass-compute-rig",
       "displayName": "Glass compute rig",
       "src": "media/targets/glass-compute-rig.webp",
       "thumb": "media/thumbs/glass-compute-rig.webp"
     },
     {
-      "name": "google-deepmind-GVGnKgEomlw-unsplash.jpg",
+      "kind": "image",
+      "name": "barcode-blocks",
       "displayName": "Barcode blocks",
       "src": "media/targets/barcode-blocks.webp",
       "thumb": "media/thumbs/barcode-blocks.webp"
     },
     {
-      "name": "google-deepmind-hpIZ5T6SS-M-unsplash.jpg",
+      "kind": "image",
+      "name": "folded-color-field",
       "displayName": "Folded color field",
       "src": "media/targets/folded-color-field.webp",
       "thumb": "media/thumbs/folded-color-field.webp"
     },
     {
-      "name": "google-deepmind-LcgLq78WZCQ-unsplash (1).jpg",
+      "kind": "image",
+      "name": "blue-circuitry-model",
       "displayName": "Blue circuitry model",
       "src": "media/targets/blue-circuitry-model.webp",
       "thumb": "media/thumbs/blue-circuitry-model.webp"
     },
     {
-      "name": "google-deepmind-mEawZ3YloK4-unsplash.jpg",
+      "kind": "image",
+      "name": "pink-particle-strands",
       "displayName": "Pink particle strands",
       "src": "media/targets/pink-particle-strands.webp",
       "thumb": "media/thumbs/pink-particle-strands.webp"
     },
     {
-      "name": "google-deepmind-pLh_n9pnRhw-unsplash.jpg",
+      "kind": "image",
+      "name": "orange-organic-folds",
       "displayName": "Orange organic folds",
       "src": "media/targets/orange-organic-folds.webp",
       "thumb": "media/thumbs/orange-organic-folds.webp"
     },
     {
-      "name": "google-deepmind-uakYuHuCnOw-unsplash.jpg",
+      "kind": "image",
+      "name": "frosted-architecture",
       "displayName": "Frosted architecture",
       "src": "media/targets/frosted-architecture.webp",
       "thumb": "media/thumbs/frosted-architecture.webp"
     },
     {
-      "name": "google-deepmind-UoJuws1wEzY-unsplash.jpg",
+      "kind": "image",
+      "name": "black-white-motion",
       "displayName": "Black-white motion",
       "src": "media/targets/black-white-motion.webp",
       "thumb": "media/thumbs/black-white-motion.webp"
+    },
+    {
+      "kind": "image",
+      "name": "coastal-rocks",
+      "displayName": "Coastal rocks",
+      "src": "media/targets/coastal-rocks.webp",
+      "thumb": "media/thumbs/coastal-rocks.webp"
+    },
+    {
+      "kind": "image",
+      "name": "corner-storefront",
+      "displayName": "Corner storefront",
+      "src": "media/targets/corner-storefront.webp",
+      "thumb": "media/thumbs/corner-storefront.webp"
+    },
+    {
+      "kind": "video",
+      "name": "hillside-monastery",
+      "displayName": "Hillside monastery",
+      "src": "media/videos/hillside-monastery.mp4",
+      "thumb": "media/video-thumbs/hillside-monastery.webp",
+      "fps": 12,
+      "duration": 10.52
+    },
+    {
+      "kind": "video",
+      "name": "salt-flats",
+      "displayName": "Salt flats",
+      "src": "media/videos/salt-flats.mp4",
+      "thumb": "media/video-thumbs/salt-flats.webp",
+      "fps": 12,
+      "duration": 25.28
+    },
+    {
+      "kind": "video",
+      "name": "glacial-textures",
+      "displayName": "Glacial textures",
+      "src": "media/videos/glacial-textures.mp4",
+      "thumb": "media/video-thumbs/glacial-textures.webp",
+      "fps": 12,
+      "duration": 57.52
+    },
+    {
+      "kind": "video",
+      "name": "street-bus",
+      "displayName": "Street bus",
+      "src": "media/videos/street-bus.mp4",
+      "thumb": "media/video-thumbs/street-bus.webp",
+      "fps": 12,
+      "duration": 7.64
+    },
+    {
+      "kind": "video",
+      "name": "mountain-dandelion",
+      "displayName": "Mountain dandelion",
+      "src": "media/videos/mountain-dandelion.mp4",
+      "thumb": "media/video-thumbs/mountain-dandelion.webp",
+      "fps": 12,
+      "duration": 8.57
+    },
+    {
+      "kind": "video",
+      "name": "city-tram",
+      "displayName": "City tram",
+      "src": "media/videos/city-tram.mp4",
+      "thumb": "media/video-thumbs/city-tram.webp",
+      "fps": 12,
+      "duration": 9.17
     }
   ]
 }
