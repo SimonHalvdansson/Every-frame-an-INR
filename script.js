@@ -34,7 +34,7 @@ const MODEL_PRESETS = {
   },
   large: {
     label: "Large",
-    featureDim: 384,
+    featureDim: 256,
     hiddenDim: 256,
     layers: 3,
     featureType: "fourier",
@@ -49,7 +49,7 @@ const MODEL_PRESETS = {
   },
   xl: {
     label: "XL",
-    featureDim: 384,
+    featureDim: 256,
     hiddenDim: 384,
     layers: 4,
     featureType: "fourier",
@@ -71,9 +71,9 @@ const referenceCanvas = document.getElementById("reference-canvas");
 const referenceContext = referenceCanvas.getContext("2d", { willReadFrequently: true });
 const latestCanvas = document.getElementById("latest-canvas");
 const latestCanvasContext = latestCanvas.getContext("2d");
-const startButton = document.getElementById("start-button");
+const startButton = document.getElementById("run-button");
 const startButtonLabel = startButton.querySelector("span");
-const stopButton = document.getElementById("stop-button");
+const runButtonIcon = document.getElementById("run-button-icon");
 const stepButton = document.getElementById("step-button");
 const resetButton = document.getElementById("reset-button");
 const webcamButton = document.getElementById("webcam-button");
@@ -131,6 +131,7 @@ const experiment = {
   webcamVideo: null,
   webcamPreviewFrame: 0,
   webcamResumeOnFocus: false,
+  webcamResumeAvailable: false,
   videoElement: null,
   videoMediaName: null,
   videoStats: makeEmptyVideoStats(),
@@ -204,8 +205,12 @@ function isWebcamActive() {
   return Boolean(experiment.webcamStream && experiment.webcamVideo);
 }
 
+function isWebcamResumePending() {
+  return experiment.inputMode === "webcam" && experiment.webcamResumeAvailable && !isWebcamActive();
+}
+
 function isStreamTarget() {
-  return isWebcamActive() || isVideoTarget();
+  return isWebcamActive() || isWebcamResumePending() || isVideoTarget();
 }
 
 function previewCount() {
@@ -654,6 +659,10 @@ async function trainChunk(epochs) {
 }
 
 async function runContinuous() {
+  if (isWebcamResumePending()) {
+    await startWebcam();
+    return;
+  }
   if (isVideoSelected()) {
     await runVideoContinuous();
     return;
@@ -681,7 +690,7 @@ async function runContinuous() {
     experiment.training = false;
     experiment.stopRequested = false;
     if (releaseWebcam) {
-      stopWebcam();
+      stopWebcam({ keepResumeMode: true });
     } else {
       renderState();
     }
@@ -704,11 +713,14 @@ async function runVideoContinuous() {
   try {
     await restartVideoPlayback();
     await sampleVideoTarget({ publish: true, appendHistory: false });
-    while (!experiment.stopRequested && isVideoTarget() && !experiment.videoElement.ended) {
+    while (!experiment.stopRequested) {
+      if (isVideoTarget() && experiment.videoElement.ended) {
+        await restartVideoPlayback();
+      }
       await trainChunk(previewCount());
       await applyPendingMediaSwitch();
-      if (!isVideoTarget()) {
-        break;
+      if (isVideoTarget() && experiment.videoElement.ended) {
+        await restartVideoPlayback();
       }
       await tf.nextFrame();
     }
@@ -838,10 +850,13 @@ function startWebcamPreviewLoop() {
   experiment.webcamPreviewFrame = requestAnimationFrame(draw);
 }
 
-function stopWebcam() {
+function stopWebcam(options = {}) {
+  const { keepResumeMode = false, render = true } = options;
   cancelAnimationFrame(experiment.webcamPreviewFrame);
   experiment.webcamPreviewFrame = 0;
-  experiment.webcamResumeOnFocus = false;
+  if (!keepResumeMode) {
+    experiment.webcamResumeOnFocus = false;
+  }
   if (experiment.webcamStream) {
     for (const track of experiment.webcamStream.getTracks()) {
       track.stop();
@@ -853,8 +868,11 @@ function stopWebcam() {
   }
   experiment.webcamStream = null;
   experiment.webcamVideo = null;
-  experiment.inputMode = experiment.currentMedia?.kind || "image";
-  renderState();
+  experiment.webcamResumeAvailable = keepResumeMode;
+  experiment.inputMode = keepResumeMode ? "webcam" : experiment.currentMedia?.kind || "image";
+  if (render) {
+    renderState();
+  }
 }
 
 function pauseWebcamForInactivePage() {
@@ -874,6 +892,11 @@ function pauseWebcamForInactivePage() {
 }
 
 function resumeWebcamForActivePage() {
+  if (experiment.webcamResumeOnFocus && isWebcamResumePending() && !document.hidden && document.hasFocus()) {
+    startWebcam();
+    return;
+  }
+
   if (!isWebcamActive() || document.hidden || !document.hasFocus()) {
     return;
   }
@@ -981,6 +1004,7 @@ async function loadVideoElement(mediaInfo) {
   video.muted = true;
   video.playsInline = true;
   video.preload = "auto";
+  video.loop = true;
   video.src = assetUrl(mediaInfo.src);
   experiment.videoElement = video;
   experiment.videoMediaName = mediaInfo.name;
@@ -1033,11 +1057,12 @@ async function startWebcam() {
     await video.play();
     await waitForMediaReady(video, "webcam video");
 
-    stopWebcam();
+    stopWebcam({ render: false });
     disposeVideoElement();
     experiment.inputMode = "webcam";
     experiment.webcamStream = stream;
     experiment.webcamVideo = video;
+    experiment.webcamResumeAvailable = false;
     experiment.currentMedia = null;
     experiment.pendingMediaName = null;
     experiment.videoStats = makeEmptyVideoStats();
@@ -1068,7 +1093,7 @@ async function startWebcam() {
 function toggleWebcam() {
   if (isWebcamActive()) {
     requestStop();
-    stopWebcam();
+    stopWebcam({ keepResumeMode: false });
   } else {
     startWebcam();
   }
@@ -1184,7 +1209,7 @@ function clampLearningRates() {
 
 async function updateModelSetting(key, value) {
   if (experiment.running || experiment.training) {
-    if (key === "streamLearningRate") {
+    if (key === "streamLearningRate" || key === "imageLearningRate" || key === "imageMinLearningRate") {
       const config = currentModel();
       if (config[key] !== value) {
         experiment.selectedModelKey = "custom";
@@ -1192,7 +1217,8 @@ async function updateModelSetting(key, value) {
           ...config,
           [key]: value,
         };
-        if (isStreamTarget()) {
+        clampLearningRates();
+        if (isStreamTarget() || key !== "streamLearningRate") {
           syncCurrentLearningRate();
         }
       }
@@ -1231,17 +1257,14 @@ async function selectMedia(mediaName, options = {}) {
     return;
   }
 
-  if ((experiment.training || (experiment.running && isVideoTarget())) && !force) {
+  if ((experiment.training || experiment.running) && !force) {
     experiment.pendingMediaName = mediaInfo.name;
-    if (experiment.running) {
-      requestStop();
-    }
     renderState();
     return;
   }
 
-  if (isWebcamActive()) {
-    stopWebcam();
+  if (isWebcamActive() || isWebcamResumePending()) {
+    stopWebcam({ keepResumeMode: false, render: false });
   }
   if (mediaInfo.kind !== "video" || experiment.videoMediaName !== mediaInfo.name) {
     disposeVideoElement();
@@ -1256,6 +1279,9 @@ async function selectMedia(mediaName, options = {}) {
     resetRunMetrics();
   } else if (mediaInfo.kind === "video") {
     experiment.videoStats = makeEmptyVideoStats();
+    experiment.videoStats.active = experiment.running;
+  } else {
+    experiment.videoStats = makeEmptyVideoStats();
   }
   renderState();
 
@@ -1264,6 +1290,9 @@ async function selectMedia(mediaName, options = {}) {
       await loadVideoElement(mediaInfo);
       if (experiment.ready) {
         updateTargetTensorFromReferenceCanvas();
+      }
+      if (experiment.running) {
+        await restartVideoPlayback();
       }
     } else {
       await loadReferenceImage(mediaInfo, experiment.ready);
@@ -1446,7 +1475,7 @@ async function initializeApp() {
 }
 
 function referenceMetaText() {
-  if (isWebcamActive()) {
+  if (isWebcamActive() || isWebcamResumePending()) {
     return `webcam ${currentTargetSize()}`;
   }
   if (isVideoSelected()) {
@@ -1489,9 +1518,14 @@ function renderState() {
     ? formatPreviewRate(experiment.lastUpdateSeconds)
     : "--";
 
-  startButtonLabel.textContent = canResume ? "Resume" : "Start";
-  startButton.disabled = !experiment.ready || experiment.running || experiment.training || !experiment.targetTensor;
-  stopButton.disabled = !experiment.running || experiment.stopRequested;
+  startButtonLabel.textContent = experiment.running ? "Pause" : canResume ? "Resume" : "Start";
+  startButton.setAttribute("aria-label", startButtonLabel.textContent);
+  if (runButtonIcon) {
+    runButtonIcon.setAttribute("d", experiment.running ? "M7 5h4v14H7zm6 0h4v14h-4z" : "M8 5v14l11-7z");
+  }
+  startButton.disabled = experiment.running
+    ? experiment.stopRequested
+    : !experiment.ready || experiment.training || !experiment.targetTensor;
   stepButton.disabled = !experiment.ready || experiment.running || experiment.training || isVideoSelected() || !experiment.targetTensor;
   resetButton.disabled = !experiment.ready || experiment.running || experiment.training || !experiment.targetTensor;
   webcamButton.textContent = webcamActive ? "Stop webcam" : "Use webcam";
@@ -1623,11 +1657,11 @@ function renderModelSettings() {
     featureTypeSelect,
     activationSelect,
     rmsNormToggle,
-    imageStartLrSlider,
-    imageEndLrSlider,
   ]) {
     control.disabled = disabled;
   }
+  imageStartLrSlider.disabled = !experiment.ready;
+  imageEndLrSlider.disabled = !experiment.ready;
   videoLrSlider.disabled = !experiment.ready;
 }
 
@@ -1754,11 +1788,11 @@ slider.addEventListener("input", () => {
 });
 
 startButton.addEventListener("click", () => {
+  if (experiment.running) {
+    requestStop();
+    return;
+  }
   runContinuous();
-});
-
-stopButton.addEventListener("click", () => {
-  requestStop();
 });
 
 stepButton.addEventListener("click", () => {
