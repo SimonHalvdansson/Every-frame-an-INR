@@ -85,6 +85,10 @@ def _make_handler(experiment: Any, root_dir: Path) -> type[BaseHTTPRequestHandle
                 self._send_file(file_path, content_type, cache=True)
                 return
 
+            if path.startswith(("/media/", "/vendor/")):
+                if self._send_static_asset(path):
+                    return
+
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:
@@ -157,6 +161,20 @@ def _make_handler(experiment: Any, root_dir: Path) -> type[BaseHTTPRequestHandle
 
             body = file_path.read_bytes()
             self._send_bytes(body, content_type, cache)
+
+        def _send_static_asset(self, path: str) -> bool:
+            relative = unquote(path).lstrip("/")
+            file_path = (root_dir / relative).resolve()
+            try:
+                file_path.relative_to(root_dir)
+            except ValueError:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return True
+            if not file_path.is_file():
+                return False
+            content_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+            self._send_file(file_path, content_type, cache=True)
+            return True
 
         def _send_bytes(
             self,

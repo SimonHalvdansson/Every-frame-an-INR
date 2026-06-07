@@ -1,7 +1,20 @@
-const stateUrl = "/api/state";
+const TARGET_SIZE = 256;
+const PIXEL_COUNT = TARGET_SIZE * TARGET_SIZE;
+const MODEL = {
+  featureDim: 256,
+  hiddenDim: 128,
+  layers: 2,
+  freqScale: 35,
+  learningRate: 0.01,
+  lrDecay: 0.995,
+  minLearningRate: 0.001,
+  seed: 7,
+};
+
+const referenceCanvas = document.getElementById("reference-canvas");
+const referenceContext = referenceCanvas.getContext("2d", { willReadFrequently: true });
 const latestCanvas = document.getElementById("latest-canvas");
 const latestCanvasContext = latestCanvas.getContext("2d");
-const referenceImage = document.getElementById("reference-image");
 const statusPill = document.getElementById("status-pill");
 const statusText = document.getElementById("status-text");
 const startButton = document.getElementById("start-button");
@@ -22,12 +35,32 @@ const errorMessage = document.getElementById("error-message");
 const lossChart = document.getElementById("loss-chart");
 const chartContext = lossChart.getContext("2d");
 
-let lastRevision = -1;
-let busy = false;
-let hasSyncedSlider = false;
-let lastImageListKey = "";
-let latestRunning = false;
-let refreshTimer = null;
+const experiment = {
+  images: [],
+  currentImage: null,
+  ready: false,
+  unsupported: false,
+  running: false,
+  training: false,
+  stopRequested: false,
+  epoch: 0,
+  loss: null,
+  psnr: null,
+  lossHistory: [],
+  lastUpdateSeconds: null,
+  targetTensor: null,
+  featureTensor: null,
+  layers: [],
+  variables: [],
+  optimizer: null,
+  currentLearningRate: MODEL.learningRate,
+  tensorBaseline: 0,
+  error: null,
+};
+
+function assetUrl(path) {
+  return new URL(path, document.baseURI).toString();
+}
 
 function previewCount() {
   return Number.parseInt(slider.value, 10);
@@ -67,142 +100,468 @@ function formatSeconds(value) {
   return `${value.toFixed(2)} s`;
 }
 
-async function postJson(url, payload = {}) {
-  busy = true;
-  renderBusy();
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const state = await response.json();
-    renderState(state);
-  } finally {
-    busy = false;
-    renderBusy();
+function showError(message) {
+  experiment.error = message;
+  errorMessage.hidden = false;
+  errorMessage.textContent = message;
+}
+
+function hideError() {
+  experiment.error = null;
+  errorMessage.hidden = true;
+  errorMessage.textContent = "";
+}
+
+function mulberry32(seed) {
+  let value = seed >>> 0;
+  return function random() {
+    value += 0x6d2b79f5;
+    let next = value;
+    next = Math.imul(next ^ (next >>> 15), next | 1);
+    next ^= next + Math.imul(next ^ (next >>> 7), next | 61);
+    return ((next ^ (next >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function makeNormalGenerator(seed) {
+  const random = mulberry32(seed);
+  let spare = null;
+  return function normal() {
+    if (spare !== null) {
+      const value = spare;
+      spare = null;
+      return value;
+    }
+    const u = Math.max(random(), 1e-7);
+    const v = random();
+    const radius = Math.sqrt(-2 * Math.log(u));
+    const theta = 2 * Math.PI * v;
+    spare = radius * Math.sin(theta);
+    return radius * Math.cos(theta);
+  };
+}
+
+function createFloatTensor(shape, fill) {
+  const size = shape.reduce((product, value) => product * value, 1);
+  const data = new Float32Array(size);
+  for (let index = 0; index < size; index += 1) {
+    data[index] = fill(index);
+  }
+  return tf.tensor(data, shape);
+}
+
+function createVariable(shape, scale, seed, name) {
+  const normal = makeNormalGenerator(seed);
+  const tensor = createFloatTensor(shape, () => normal() * scale);
+  const variable = tf.variable(tensor, true, name);
+  tensor.dispose();
+  return variable;
+}
+
+function disposeModel() {
+  for (const variable of experiment.variables) {
+    variable.dispose();
+  }
+  experiment.variables = [];
+  experiment.layers = [];
+  if (experiment.optimizer?.dispose) {
+    experiment.optimizer.dispose();
+  }
+  experiment.optimizer = null;
+}
+
+function disposeTarget() {
+  if (experiment.targetTensor) {
+    experiment.targetTensor.dispose();
+    experiment.targetTensor = null;
   }
 }
 
-async function refreshState() {
+function buildFeatureTensor() {
+  if (experiment.featureTensor) {
+    return;
+  }
+
+  experiment.featureTensor = tf.tidy(() => {
+    const coords = createFloatTensor([PIXEL_COUNT, 2], (index) => {
+      const pixelIndex = Math.floor(index / 2);
+      const isX = index % 2 === 0;
+      const x = pixelIndex % TARGET_SIZE;
+      const y = Math.floor(pixelIndex / TARGET_SIZE);
+      return (isX ? x : y) / (TARGET_SIZE - 1);
+    });
+
+    const normal = makeNormalGenerator(MODEL.seed);
+    const freqs = createFloatTensor([2, MODEL.featureDim / 2], () => {
+      return normal() * MODEL.freqScale;
+    });
+
+    const phase = coords.matMul(freqs).mul(2 * Math.PI);
+    return tf.concat([phase.cos(), phase.sin()], 1);
+  });
+}
+
+function buildModel() {
+  disposeModel();
+  experiment.layers = [];
+  experiment.variables = [];
+  experiment.currentLearningRate = MODEL.learningRate;
+
+  let inputDim = MODEL.featureDim;
+  for (let layerIndex = 0; layerIndex < MODEL.layers; layerIndex += 1) {
+    const weight = createVariable(
+      [inputDim, MODEL.hiddenDim],
+      Math.sqrt(2 / inputDim),
+      MODEL.seed + 101 + layerIndex,
+      `hidden_${layerIndex}_weight`,
+    );
+    const bias = createVariable(
+      [MODEL.hiddenDim],
+      0.01,
+      MODEL.seed + 201 + layerIndex,
+      `hidden_${layerIndex}_bias`,
+    );
+    experiment.layers.push({ weight, bias, activation: "silu" });
+    experiment.variables.push(weight, bias);
+    inputDim = MODEL.hiddenDim;
+  }
+
+  const outputWeight = createVariable(
+    [inputDim, 3],
+    Math.sqrt(1 / inputDim),
+    MODEL.seed + 301,
+    "output_weight",
+  );
+  const outputBias = createVariable([3], 0.01, MODEL.seed + 302, "output_bias");
+  experiment.layers.push({ weight: outputWeight, bias: outputBias, activation: "sigmoid" });
+  experiment.variables.push(outputWeight, outputBias);
+  experiment.optimizer = tf.train.adam(MODEL.learningRate);
+}
+
+function forward(features) {
+  let value = features;
+  for (const layer of experiment.layers) {
+    value = value.matMul(layer.weight).add(layer.bias);
+    if (layer.activation === "silu") {
+      value = value.mul(value.sigmoid());
+    } else if (layer.activation === "sigmoid") {
+      value = value.sigmoid();
+    }
+  }
+  return value;
+}
+
+function trainOneEpoch() {
+  experiment.optimizer.minimize(() => {
+    return tf.tidy(() => {
+      const prediction = forward(experiment.featureTensor);
+      return tf.mean(tf.squaredDifference(prediction, experiment.targetTensor));
+    });
+  }, false, experiment.variables);
+
+  experiment.epoch += 1;
+  experiment.currentLearningRate = Math.max(
+    MODEL.minLearningRate,
+    MODEL.learningRate * MODEL.lrDecay ** experiment.epoch,
+  );
+  if (typeof experiment.optimizer.setLearningRate === "function") {
+    experiment.optimizer.setLearningRate(experiment.currentLearningRate);
+  }
+}
+
+async function publishPreview(startedAt) {
+  const result = tf.tidy(() => {
+    const prediction = forward(experiment.featureTensor);
+    const loss = tf.mean(tf.squaredDifference(prediction, experiment.targetTensor));
+    return { prediction, loss };
+  });
+
+  const [pixels, lossValues] = await Promise.all([
+    result.prediction.data(),
+    result.loss.data(),
+  ]);
+  result.prediction.dispose();
+  result.loss.dispose();
+
+  const loss = Number(lossValues[0]);
+  const psnr = 10 * Math.log10(1 / Math.max(loss, 1e-12));
+  drawOutput(pixels);
+
+  experiment.loss = loss;
+  experiment.psnr = psnr;
+  experiment.lossHistory.push({
+    epoch: experiment.epoch,
+    loss,
+    psnr,
+  });
+  experiment.lastUpdateSeconds = (performance.now() - startedAt) / 1000;
+
+  console.debug("INR preview", {
+    backend: tf.getBackend(),
+    epoch: experiment.epoch,
+    loss,
+    tensors: tf.memory().numTensors,
+    previewMs: Math.round(experiment.lastUpdateSeconds * 1000),
+    lr: experiment.currentLearningRate,
+  });
+}
+
+async function trainChunk(epochs) {
+  if (!experiment.ready || experiment.training) {
+    return;
+  }
+
+  const startedAt = performance.now();
+  experiment.training = true;
+  hideError();
+  renderState();
+
   try {
-    const response = await fetch(stateUrl, { cache: "no-store" });
-    const state = await response.json();
-    renderState(state);
+    for (let index = 0; index < epochs; index += 1) {
+      trainOneEpoch();
+    }
+    await publishPreview(startedAt);
   } catch (error) {
     showError(String(error));
   } finally {
-    scheduleRefresh();
+    experiment.training = false;
+    renderState();
   }
 }
 
-function scheduleRefresh() {
-  if (refreshTimer) {
-    clearTimeout(refreshTimer);
+async function runContinuous() {
+  if (!experiment.ready || experiment.running || experiment.training) {
+    return;
   }
-  refreshTimer = setTimeout(refreshState, latestRunning ? 50 : 700);
+
+  experiment.running = true;
+  experiment.stopRequested = false;
+  hideError();
+  renderState();
+
+  try {
+    while (!experiment.stopRequested) {
+      await trainChunk(previewCount());
+      await tf.nextFrame();
+    }
+  } catch (error) {
+    showError(String(error));
+  } finally {
+    experiment.running = false;
+    experiment.training = false;
+    experiment.stopRequested = false;
+    renderState();
+  }
 }
 
-function renderState(state) {
-  const running = Boolean(state.running);
-  const training = Boolean(state.training);
-  latestRunning = running || training;
+function requestStop() {
+  experiment.stopRequested = true;
+  renderState();
+}
 
-  renderImageOptions(state.images || [], state.current_image);
+function drawOutput(values) {
+  const rgba = new Uint8ClampedArray(PIXEL_COUNT * 4);
+  for (let source = 0, target = 0; source < values.length; source += 3, target += 4) {
+    rgba[target] = Math.max(0, Math.min(255, Math.round(values[source] * 255)));
+    rgba[target + 1] = Math.max(0, Math.min(255, Math.round(values[source + 1] * 255)));
+    rgba[target + 2] = Math.max(0, Math.min(255, Math.round(values[source + 2] * 255)));
+    rgba[target + 3] = 255;
+  }
+  latestCanvasContext.putImageData(new ImageData(rgba, TARGET_SIZE, TARGET_SIZE), 0, 0);
+}
 
-  if (!hasSyncedSlider && state.epochs_per_preview) {
-    slider.value = String(state.epochs_per_preview);
-    sliderValue.textContent = String(previewCount());
-    hasSyncedSlider = true;
+function clearOutput() {
+  latestCanvasContext.fillStyle = "#777a73";
+  latestCanvasContext.fillRect(0, 0, TARGET_SIZE, TARGET_SIZE);
+}
+
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.decoding = "async";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`Could not load image: ${url}`));
+    image.src = url;
+  });
+}
+
+async function loadReferenceImage(imageInfo, createTensor) {
+  const image = await loadImage(assetUrl(imageInfo.src));
+  referenceContext.clearRect(0, 0, TARGET_SIZE, TARGET_SIZE);
+  referenceContext.drawImage(image, 0, 0, TARGET_SIZE, TARGET_SIZE);
+
+  if (!createTensor) {
+    disposeTarget();
+    return;
   }
 
-  statusPill.classList.toggle("is-running", running || training);
-  statusText.textContent = running ? "Training" : training ? "Working" : "Idle";
+  disposeTarget();
+  const imageData = referenceContext.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE).data;
+  const target = new Float32Array(PIXEL_COUNT * 3);
+  for (let source = 0, targetIndex = 0; source < imageData.length; source += 4, targetIndex += 3) {
+    target[targetIndex] = imageData[source] / 255;
+    target[targetIndex + 1] = imageData[source + 1] / 255;
+    target[targetIndex + 2] = imageData[source + 2] / 255;
+  }
+  experiment.targetTensor = tf.tensor2d(target, [PIXEL_COUNT, 3]);
+}
 
-  epochValue.textContent = String(state.epoch ?? 0);
-  outputMeta.textContent = `epoch ${state.epoch ?? 0}`;
-  referenceMeta.textContent = `${state.target_size ?? 256} x ${state.target_size ?? 256}`;
-  lossValue.textContent = formatLoss(state.loss);
-  psnrValue.textContent = formatPsnr(state.psnr);
-  deviceValue.textContent = state.device ?? "--";
-  timingValue.textContent = state.last_update_seconds
-    ? `preview ${formatSeconds(state.last_update_seconds)}`
+async function selectImage(imageName) {
+  const imageInfo = experiment.images.find((image) => image.name === imageName) || experiment.images[0];
+  if (!imageInfo || experiment.training || experiment.running) {
+    return;
+  }
+
+  hideError();
+  experiment.training = true;
+  experiment.currentImage = imageInfo;
+  experiment.epoch = 0;
+  experiment.loss = null;
+  experiment.psnr = null;
+  experiment.lossHistory = [];
+  experiment.lastUpdateSeconds = null;
+  renderState();
+
+  try {
+    await loadReferenceImage(imageInfo, experiment.ready);
+    if (experiment.ready) {
+      buildModel();
+      await publishPreview(performance.now());
+    } else {
+      clearOutput();
+    }
+  } catch (error) {
+    showError(String(error));
+  } finally {
+    experiment.training = false;
+    renderState();
+  }
+}
+
+async function resetExperiment() {
+  if (!experiment.currentImage || experiment.training || experiment.running) {
+    return;
+  }
+  await selectImage(experiment.currentImage.name);
+}
+
+async function loadManifest() {
+  const response = await fetch(assetUrl("media/images.json"), { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Could not load media manifest (${response.status})`);
+  }
+  const manifest = await response.json();
+  experiment.images = Array.isArray(manifest.images) ? manifest.images : [];
+  if (experiment.images.length === 0) {
+    throw new Error("media/images.json does not list any images.");
+  }
+}
+
+async function initializeTensorFlow() {
+  if (!window.tf) {
+    throw new Error("TensorFlow.js did not load.");
+  }
+  if (!navigator.gpu) {
+    throw new Error("WebGPU is not available in this browser. Use current Chrome or Edge on desktop.");
+  }
+
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) {
+    throw new Error("No WebGPU adapter was found. Check browser GPU settings and hardware acceleration.");
+  }
+
+  await tf.setBackend("webgpu");
+  await tf.ready();
+  buildFeatureTensor();
+  experiment.ready = true;
+  experiment.tensorBaseline = tf.memory().numTensors;
+}
+
+async function initializeApp() {
+  sliderValue.textContent = String(previewCount());
+  clearOutput();
+  renderState();
+
+  try {
+    await loadManifest();
+    renderImageOptions();
+  } catch (error) {
+    showError(String(error));
+    renderState();
+    return;
+  }
+
+  try {
+    await initializeTensorFlow();
+  } catch (error) {
+    experiment.unsupported = true;
+    showError(String(error));
+  }
+
+  await selectImage(experiment.images[0].name);
+  renderState();
+}
+
+function renderState() {
+  const active = experiment.running || experiment.training;
+  statusPill.classList.toggle("is-running", active);
+  statusText.textContent = experiment.running
+    ? experiment.stopRequested
+      ? "Stopping"
+      : "Training"
+    : experiment.training
+      ? "Working"
+      : "Idle";
+
+  referenceMeta.textContent = `${TARGET_SIZE} x ${TARGET_SIZE}`;
+  epochValue.textContent = String(experiment.epoch);
+  outputMeta.textContent = `epoch ${experiment.epoch}`;
+  lossValue.textContent = formatLoss(experiment.loss);
+  psnrValue.textContent = formatPsnr(experiment.psnr);
+  deviceValue.textContent = experiment.ready ? tf.getBackend() : experiment.unsupported ? "No WebGPU" : "--";
+  timingValue.textContent = experiment.lastUpdateSeconds
+    ? `preview ${formatSeconds(experiment.lastUpdateSeconds)}`
     : "--";
 
-  if (state.image_revision !== lastRevision) {
-    lastRevision = state.image_revision;
-    referenceImage.src = `/media/reference.png?rev=${encodeURIComponent(lastRevision)}`;
-    drawLatestRaw(lastRevision, state.target_size ?? 256);
-  }
-
-  if (state.error) {
-    showError(state.error);
-  } else {
-    hideError();
-  }
-
-  startButton.disabled = busy;
-  stopButton.disabled = busy || !running;
-  stepButton.disabled = busy || running || training;
-  resetButton.disabled = busy || training;
-  setImageButtonsDisabled(busy || training);
-  drawLossChart(state.loss_history || []);
+  startButton.disabled = !experiment.ready || experiment.running || experiment.training;
+  stopButton.disabled = !experiment.running || experiment.stopRequested;
+  stepButton.disabled = !experiment.ready || experiment.running || experiment.training;
+  resetButton.disabled = !experiment.ready || experiment.running || experiment.training;
+  setImageButtonsDisabled(experiment.running || experiment.training);
+  renderImageOptions();
+  drawLossChart(experiment.lossHistory);
 }
 
-async function drawLatestRaw(revision, size) {
-  try {
-    const response = await fetch(`/media/latest.raw?rev=${encodeURIComponent(revision)}`, {
-      cache: "no-store",
-    });
-    const bytes = new Uint8ClampedArray(await response.arrayBuffer());
-    const pixelCount = size * size;
-    const rgba = new Uint8ClampedArray(pixelCount * 4);
-    for (let source = 0, target = 0; source < bytes.length; source += 3, target += 4) {
-      rgba[target] = bytes[source];
-      rgba[target + 1] = bytes[source + 1];
-      rgba[target + 2] = bytes[source + 2];
-      rgba[target + 3] = 255;
-    }
-    if (latestCanvas.width !== size || latestCanvas.height !== size) {
-      latestCanvas.width = size;
-      latestCanvas.height = size;
-    }
-    latestCanvasContext.putImageData(new ImageData(rgba, size, size), 0, 0);
-  } catch (error) {
-    showError(`Could not draw preview: ${error}`);
-  }
-}
+function renderImageOptions() {
+  const existing = new Set(Array.from(imagePicker.querySelectorAll(".image-option")).map((button) => button.dataset.image));
+  const wanted = new Set(experiment.images.map((image) => image.name));
+  const needsRebuild = existing.size !== wanted.size || [...wanted].some((name) => !existing.has(name));
 
-function renderImageOptions(images, currentImage) {
-  const key = images.map((image) => `${image.name}:${image.display_name}`).join("|");
-  if (key !== lastImageListKey) {
+  if (needsRebuild) {
     imagePicker.replaceChildren();
-    for (const image of images) {
+    for (const image of experiment.images) {
       const button = document.createElement("button");
       button.className = "image-option";
       button.type = "button";
       button.dataset.image = image.name;
-      button.title = image.display_name || image.name;
-      button.setAttribute("aria-label", `Use ${image.display_name || image.name}`);
+      button.title = image.displayName || image.name;
+      button.setAttribute("aria-label", `Use ${image.displayName || image.name}`);
 
       const thumb = document.createElement("img");
-      thumb.src = `/media/thumb/${encodeURIComponent(image.name)}`;
+      thumb.src = assetUrl(image.thumb || image.src);
       thumb.alt = "";
       thumb.loading = "lazy";
       button.append(thumb);
 
-      button.addEventListener("click", () => {
-        lastRevision = -1;
-        postJson("/api/select", { image: image.name });
-      });
+      button.addEventListener("click", () => selectImage(image.name));
       imagePicker.append(button);
     }
-    lastImageListKey = key;
   }
 
   for (const button of imagePicker.querySelectorAll(".image-option")) {
-    button.classList.toggle("is-selected", button.dataset.image === currentImage);
-    button.setAttribute("aria-pressed", String(button.dataset.image === currentImage));
+    const selected = button.dataset.image === experiment.currentImage?.name;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
   }
 }
 
@@ -210,24 +569,6 @@ function setImageButtonsDisabled(disabled) {
   for (const button of imagePicker.querySelectorAll(".image-option")) {
     button.disabled = disabled;
   }
-}
-
-function renderBusy() {
-  startButton.disabled = busy;
-  stopButton.disabled = busy;
-  stepButton.disabled = busy;
-  resetButton.disabled = busy;
-  setImageButtonsDisabled(busy);
-}
-
-function showError(message) {
-  errorMessage.hidden = false;
-  errorMessage.textContent = message;
-}
-
-function hideError() {
-  errorMessage.hidden = true;
-  errorMessage.textContent = "";
 }
 
 function prepareCanvas() {
@@ -339,22 +680,21 @@ slider.addEventListener("input", () => {
 });
 
 startButton.addEventListener("click", () => {
-  postJson("/api/start", { epochs_per_preview: previewCount() });
+  runContinuous();
 });
 
 stopButton.addEventListener("click", () => {
-  postJson("/api/stop");
+  requestStop();
 });
 
 stepButton.addEventListener("click", () => {
-  postJson("/api/step", { steps: previewCount() });
+  trainChunk(previewCount());
 });
 
 resetButton.addEventListener("click", () => {
-  postJson("/api/reset");
+  resetExperiment();
 });
 
-window.addEventListener("resize", () => refreshState());
+window.addEventListener("resize", () => drawLossChart(experiment.lossHistory));
 
-sliderValue.textContent = String(previewCount());
-refreshState();
+initializeApp();

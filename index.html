@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Every frame an INR</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="./style.css">
 </head>
 <body>
   <main class="shell">
@@ -25,7 +25,7 @@
             <code id="reference-meta">256 x 256</code>
           </figcaption>
           <div class="image-frame">
-            <img id="reference-image" src="/media/reference.png" alt="Reference target image">
+            <canvas id="reference-canvas" width="256" height="256" aria-label="Reference target image"></canvas>
           </div>
         </figure>
 
@@ -90,6 +90,8 @@
     </section>
   </main>
 
-  <script src="/script.js"></script>
+  <script src="./vendor/tfjs/tf.min.js"></script>
+  <script src="./vendor/tfjs/tf-backend-webgpu.min.js"></script>
+  <script src="./script.js"></script>
 </body>
 </html>
