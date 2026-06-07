@@ -3,68 +3,68 @@
     {
       "name": "image.png",
       "displayName": "Harmonic screenshot",
-      "src": "media/image.png",
-      "thumb": "media/thumbs/harmonic-screenshot.jpg"
+      "src": "media/targets/harmonic-screenshot.webp",
+      "thumb": "media/thumbs/harmonic-screenshot.webp"
     },
     {
       "name": "google-deepmind-2ufXB-oAyG0-unsplash.jpg",
       "displayName": "Code domes",
-      "src": "media/google-deepmind-2ufXB-oAyG0-unsplash.jpg",
-      "thumb": "media/thumbs/code-domes.jpg"
+      "src": "media/targets/code-domes.webp",
+      "thumb": "media/thumbs/code-domes.webp"
     },
     {
       "name": "google-deepmind-37x7-sBhwf8-unsplash.jpg",
       "displayName": "White flight paths",
-      "src": "media/google-deepmind-37x7-sBhwf8-unsplash.jpg",
-      "thumb": "media/thumbs/white-flight-paths.jpg"
+      "src": "media/targets/white-flight-paths.webp",
+      "thumb": "media/thumbs/white-flight-paths.webp"
     },
     {
       "name": "google-deepmind-Fv39DqWqtHw-unsplash.jpg",
       "displayName": "Glass compute rig",
-      "src": "media/google-deepmind-Fv39DqWqtHw-unsplash.jpg",
-      "thumb": "media/thumbs/glass-compute-rig.jpg"
+      "src": "media/targets/glass-compute-rig.webp",
+      "thumb": "media/thumbs/glass-compute-rig.webp"
     },
     {
       "name": "google-deepmind-GVGnKgEomlw-unsplash.jpg",
       "displayName": "Barcode blocks",
-      "src": "media/google-deepmind-GVGnKgEomlw-unsplash.jpg",
-      "thumb": "media/thumbs/barcode-blocks.jpg"
+      "src": "media/targets/barcode-blocks.webp",
+      "thumb": "media/thumbs/barcode-blocks.webp"
     },
     {
       "name": "google-deepmind-hpIZ5T6SS-M-unsplash.jpg",
       "displayName": "Folded color field",
-      "src": "media/google-deepmind-hpIZ5T6SS-M-unsplash.jpg",
-      "thumb": "media/thumbs/folded-color-field.jpg"
+      "src": "media/targets/folded-color-field.webp",
+      "thumb": "media/thumbs/folded-color-field.webp"
     },
     {
       "name": "google-deepmind-LcgLq78WZCQ-unsplash (1).jpg",
       "displayName": "Blue circuitry model",
-      "src": "media/google-deepmind-LcgLq78WZCQ-unsplash (1).jpg",
-      "thumb": "media/thumbs/blue-circuitry-model.jpg"
+      "src": "media/targets/blue-circuitry-model.webp",
+      "thumb": "media/thumbs/blue-circuitry-model.webp"
     },
     {
       "name": "google-deepmind-mEawZ3YloK4-unsplash.jpg",
       "displayName": "Pink particle strands",
-      "src": "media/google-deepmind-mEawZ3YloK4-unsplash.jpg",
-      "thumb": "media/thumbs/pink-particle-strands.jpg"
+      "src": "media/targets/pink-particle-strands.webp",
+      "thumb": "media/thumbs/pink-particle-strands.webp"
     },
     {
       "name": "google-deepmind-pLh_n9pnRhw-unsplash.jpg",
       "displayName": "Orange organic folds",
-      "src": "media/google-deepmind-pLh_n9pnRhw-unsplash.jpg",
-      "thumb": "media/thumbs/orange-organic-folds.jpg"
+      "src": "media/targets/orange-organic-folds.webp",
+      "thumb": "media/thumbs/orange-organic-folds.webp"
     },
     {
       "name": "google-deepmind-uakYuHuCnOw-unsplash.jpg",
       "displayName": "Frosted architecture",
-      "src": "media/google-deepmind-uakYuHuCnOw-unsplash.jpg",
-      "thumb": "media/thumbs/frosted-architecture.jpg"
+      "src": "media/targets/frosted-architecture.webp",
+      "thumb": "media/thumbs/frosted-architecture.webp"
     },
     {
       "name": "google-deepmind-UoJuws1wEzY-unsplash.jpg",
       "displayName": "Black-white motion",
-      "src": "media/google-deepmind-UoJuws1wEzY-unsplash.jpg",
-      "thumb": "media/thumbs/black-white-motion.jpg"
+      "src": "media/targets/black-white-motion.webp",
+      "thumb": "media/thumbs/black-white-motion.webp"
     }
   ]
 }

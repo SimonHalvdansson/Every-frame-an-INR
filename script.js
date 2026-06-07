@@ -15,8 +15,6 @@ const referenceCanvas = document.getElementById("reference-canvas");
 const referenceContext = referenceCanvas.getContext("2d", { willReadFrequently: true });
 const latestCanvas = document.getElementById("latest-canvas");
 const latestCanvasContext = latestCanvas.getContext("2d");
-const statusPill = document.getElementById("status-pill");
-const statusText = document.getElementById("status-text");
 const startButton = document.getElementById("start-button");
 const stopButton = document.getElementById("stop-button");
 const stepButton = document.getElementById("step-button");
@@ -34,6 +32,7 @@ const timingValue = document.getElementById("timing-value");
 const errorMessage = document.getElementById("error-message");
 const lossChart = document.getElementById("loss-chart");
 const chartContext = lossChart.getContext("2d");
+const chartEmpty = document.getElementById("chart-empty");
 
 const experiment = {
   images: [],
@@ -43,6 +42,7 @@ const experiment = {
   running: false,
   training: false,
   stopRequested: false,
+  pendingImageName: null,
   epoch: 0,
   loss: null,
   psnr: null,
@@ -64,6 +64,15 @@ function assetUrl(path) {
 
 function previewCount() {
   return Number.parseInt(slider.value, 10);
+}
+
+function updateSliderProgress() {
+  const min = Number.parseFloat(slider.min || "0");
+  const max = Number.parseFloat(slider.max || "100");
+  const value = Number.parseFloat(slider.value || "0");
+  const progress = ((value - min) / Math.max(1, max - min)) * 100;
+  slider.style.setProperty("--slider-progress", `${progress}%`);
+  sliderValue.textContent = String(previewCount());
 }
 
 function formatLoss(value) {
@@ -269,7 +278,8 @@ function trainOneEpoch() {
   }
 }
 
-async function publishPreview(startedAt) {
+async function publishPreview(startedAt, options = {}) {
+  const { appendHistory = true } = options;
   const result = tf.tidy(() => {
     const prediction = forward(experiment.featureTensor);
     const loss = tf.mean(tf.squaredDifference(prediction, experiment.targetTensor));
@@ -289,11 +299,13 @@ async function publishPreview(startedAt) {
 
   experiment.loss = loss;
   experiment.psnr = psnr;
-  experiment.lossHistory.push({
-    epoch: experiment.epoch,
-    loss,
-    psnr,
-  });
+  if (appendHistory) {
+    experiment.lossHistory.push({
+      epoch: experiment.epoch,
+      loss,
+      psnr,
+    });
+  }
   experiment.lastUpdateSeconds = (performance.now() - startedAt) / 1000;
 
   console.debug("INR preview", {
@@ -327,6 +339,8 @@ async function trainChunk(epochs) {
     experiment.training = false;
     renderState();
   }
+
+  await applyPendingImageSwitch();
 }
 
 async function runContinuous() {
@@ -342,6 +356,7 @@ async function runContinuous() {
   try {
     while (!experiment.stopRequested) {
       await trainChunk(previewCount());
+      await applyPendingImageSwitch();
       await tf.nextFrame();
     }
   } catch (error) {
@@ -357,6 +372,15 @@ async function runContinuous() {
 function requestStop() {
   experiment.stopRequested = true;
   renderState();
+}
+
+async function applyPendingImageSwitch() {
+  if (!experiment.pendingImageName || experiment.training) {
+    return;
+  }
+  const imageName = experiment.pendingImageName;
+  experiment.pendingImageName = null;
+  await selectImage(imageName, { resetModel: false, force: true });
 }
 
 function drawOutput(values) {
@@ -395,7 +419,6 @@ async function loadReferenceImage(imageInfo, createTensor) {
     return;
   }
 
-  disposeTarget();
   const imageData = referenceContext.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE).data;
   const target = new Float32Array(PIXEL_COUNT * 3);
   for (let source = 0, targetIndex = 0; source < imageData.length; source += 4, targetIndex += 3) {
@@ -403,29 +426,43 @@ async function loadReferenceImage(imageInfo, createTensor) {
     target[targetIndex + 1] = imageData[source + 1] / 255;
     target[targetIndex + 2] = imageData[source + 2] / 255;
   }
-  experiment.targetTensor = tf.tensor2d(target, [PIXEL_COUNT, 3]);
+  const nextTargetTensor = tf.tensor2d(target, [PIXEL_COUNT, 3]);
+  disposeTarget();
+  experiment.targetTensor = nextTargetTensor;
 }
 
-async function selectImage(imageName) {
+async function selectImage(imageName, options = {}) {
+  const { resetModel = false, force = false } = options;
   const imageInfo = experiment.images.find((image) => image.name === imageName) || experiment.images[0];
-  if (!imageInfo || experiment.training || experiment.running) {
+  if (!imageInfo) {
+    return;
+  }
+
+  if (experiment.training && !force) {
+    experiment.pendingImageName = imageInfo.name;
+    renderState();
     return;
   }
 
   hideError();
   experiment.training = true;
   experiment.currentImage = imageInfo;
-  experiment.epoch = 0;
-  experiment.loss = null;
-  experiment.psnr = null;
-  experiment.lossHistory = [];
-  experiment.lastUpdateSeconds = null;
+  const shouldResetModel = resetModel || experiment.variables.length === 0;
+  if (shouldResetModel) {
+    experiment.epoch = 0;
+    experiment.loss = null;
+    experiment.psnr = null;
+    experiment.lossHistory = [];
+    experiment.lastUpdateSeconds = null;
+  }
   renderState();
 
   try {
     await loadReferenceImage(imageInfo, experiment.ready);
     if (experiment.ready) {
-      buildModel();
+      if (shouldResetModel) {
+        buildModel();
+      }
       await publishPreview(performance.now());
     } else {
       clearOutput();
@@ -442,7 +479,7 @@ async function resetExperiment() {
   if (!experiment.currentImage || experiment.training || experiment.running) {
     return;
   }
-  await selectImage(experiment.currentImage.name);
+  await selectImage(experiment.currentImage.name, { resetModel: true });
 }
 
 async function loadManifest() {
@@ -478,7 +515,7 @@ async function initializeTensorFlow() {
 }
 
 async function initializeApp() {
-  sliderValue.textContent = String(previewCount());
+  updateSliderProgress();
   clearOutput();
   renderState();
 
@@ -498,20 +535,18 @@ async function initializeApp() {
     showError(String(error));
   }
 
-  await selectImage(experiment.images[0].name);
+  await selectImage(experiment.images[0].name, { resetModel: true });
   renderState();
 }
 
 function renderState() {
-  const active = experiment.running || experiment.training;
-  statusPill.classList.toggle("is-running", active);
-  statusText.textContent = experiment.running
+  document.body.dataset.state = experiment.running
     ? experiment.stopRequested
-      ? "Stopping"
-      : "Training"
+      ? "stopping"
+      : "training"
     : experiment.training
-      ? "Working"
-      : "Idle";
+      ? "working"
+      : "idle";
 
   referenceMeta.textContent = `${TARGET_SIZE} x ${TARGET_SIZE}`;
   epochValue.textContent = String(experiment.epoch);
@@ -527,7 +562,7 @@ function renderState() {
   stopButton.disabled = !experiment.running || experiment.stopRequested;
   stepButton.disabled = !experiment.ready || experiment.running || experiment.training;
   resetButton.disabled = !experiment.ready || experiment.running || experiment.training;
-  setImageButtonsDisabled(experiment.running || experiment.training);
+  setImageButtonsDisabled(experiment.images.length === 0);
   renderImageOptions();
   drawLossChart(experiment.lossHistory);
 }
@@ -560,7 +595,9 @@ function renderImageOptions() {
 
   for (const button of imagePicker.querySelectorAll(".image-option")) {
     const selected = button.dataset.image === experiment.currentImage?.name;
+    const pending = button.dataset.image === experiment.pendingImageName;
     button.classList.toggle("is-selected", selected);
+    button.classList.toggle("is-pending", pending);
     button.setAttribute("aria-pressed", String(selected));
   }
 }
@@ -598,10 +635,8 @@ function drawLossChart(history) {
   chartContext.fillRect(0, 0, width, height);
 
   const points = history.filter((item) => item.loss > 0);
+  chartEmpty.hidden = points.length >= 2;
   if (points.length < 2) {
-    chartContext.fillStyle = "#706b74";
-    chartContext.font = "16px Google Sans Flex, Segoe UI, sans-serif";
-    chartContext.fillText("Waiting for previews", left, height / 2);
     return;
   }
 
@@ -611,9 +646,12 @@ function drawLossChart(history) {
   const maxEpoch = Math.max(...epochs);
   const minLoss = Math.min(...losses);
   const maxLoss = Math.max(...losses);
-  const minLog = Math.floor(Math.log10(minLoss));
-  const maxLog = Math.ceil(Math.log10(maxLoss));
-  const logSpan = Math.max(1, maxLog - minLog);
+  const rawMinLog = Math.log10(minLoss);
+  const rawMaxLog = Math.log10(maxLoss);
+  const paddedLogSpan = Math.max(0.5, (rawMaxLog - rawMinLog) / 0.8);
+  const minLog = rawMinLog - paddedLogSpan * 0.1;
+  const maxLog = rawMaxLog + paddedLogSpan * 0.1;
+  const logSpan = maxLog - minLog;
   const epochSpan = Math.max(1, maxEpoch - minEpoch);
 
   const xOf = (epoch) => left + ((epoch - minEpoch) / epochSpan) * plotWidth;
@@ -626,7 +664,8 @@ function drawLossChart(history) {
   chartContext.textAlign = "right";
   chartContext.textBaseline = "middle";
 
-  for (let exponent = minLog; exponent <= maxLog; exponent += 1) {
+  let tickCount = 0;
+  for (let exponent = Math.ceil(minLog); exponent <= Math.floor(maxLog); exponent += 1) {
     const value = 10 ** exponent;
     const y = yOf(value);
     chartContext.beginPath();
@@ -634,6 +673,18 @@ function drawLossChart(history) {
     chartContext.lineTo(width - right, y);
     chartContext.stroke();
     chartContext.fillText(formatAxisLoss(value), left - 8, y);
+    tickCount += 1;
+  }
+
+  if (tickCount === 0) {
+    for (const value of [10 ** maxLog, 10 ** ((minLog + maxLog) / 2), 10 ** minLog]) {
+      const y = yOf(value);
+      chartContext.beginPath();
+      chartContext.moveTo(left, y);
+      chartContext.lineTo(width - right, y);
+      chartContext.stroke();
+      chartContext.fillText(formatAxisLoss(value), left - 8, y);
+    }
   }
 
   chartContext.strokeStyle = "#bcb4c1";
@@ -676,7 +727,7 @@ function drawLossChart(history) {
 }
 
 slider.addEventListener("input", () => {
-  sliderValue.textContent = String(previewCount());
+  updateSliderProgress();
 });
 
 startButton.addEventListener("click", () => {

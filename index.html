@@ -11,10 +11,6 @@
   <main class="shell">
     <header class="topbar">
       <h1>Every frame an INR</h1>
-      <div class="status-pill" id="status-pill">
-        <span class="status-dot" aria-hidden="true"></span>
-        <span id="status-text">Idle</span>
-      </div>
     </header>
 
     <section class="lab-grid" aria-label="Interactive INR workspace">
@@ -83,7 +79,17 @@
             <span>Loss trace</span>
             <code id="timing-value">--</code>
           </div>
-          <canvas id="loss-chart" width="720" height="250"></canvas>
+          <div class="chart-canvas-wrap">
+            <canvas id="loss-chart" width="720" height="250"></canvas>
+            <div class="chart-empty" id="chart-empty" aria-hidden="true">
+              <svg viewBox="0 0 96 72" role="img">
+                <path d="M16 48c10-22 18-26 28-12s18 20 36-14" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+                <circle cx="16" cy="48" r="5" fill="currentColor"/>
+                <circle cx="44" cy="36" r="5" fill="currentColor"/>
+                <circle cx="80" cy="22" r="5" fill="currentColor"/>
+              </svg>
+            </div>
+          </div>
           <p id="error-message" class="error-message" hidden></p>
         </section>
       </aside>
