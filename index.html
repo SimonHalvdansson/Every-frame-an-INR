@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Every frame an INR</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <h1>Every frame an INR</h1>
+      <div class="status-pill" id="status-pill">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="status-text">Idle</span>
+      </div>
+    </header>
+
+    <section class="lab-grid" aria-label="Interactive INR workspace">
+      <div class="preview-grid">
+        <figure class="image-panel reference-panel">
+          <figcaption>
+            <span>Reference</span>
+            <code id="reference-meta">256 x 256</code>
+          </figcaption>
+          <div class="image-frame">
+            <img id="reference-image" src="/media/reference.png" alt="Reference target image">
+          </div>
+        </figure>
+
+        <figure class="image-panel output-panel">
+          <figcaption>
+            <span>INR output</span>
+            <code id="output-meta">epoch 0</code>
+          </figcaption>
+          <div class="image-frame">
+            <canvas id="latest-canvas" width="256" height="256" aria-label="Latest INR output"></canvas>
+          </div>
+        </figure>
+      </div>
+
+      <aside class="side-panel" aria-label="Controls and metrics">
+        <section class="image-picker-field" aria-label="Target image">
+          <span>Target image</span>
+          <div class="image-picker" id="image-picker"></div>
+        </section>
+
+        <div class="control-strip">
+          <button id="start-button" class="primary-button" type="button">Start continuous</button>
+          <button id="stop-button" type="button">Stop</button>
+          <button id="step-button" type="button">Step</button>
+          <button id="reset-button" type="button">Reset</button>
+        </div>
+
+        <label class="slider-row" for="epoch-slider">
+          <span>Epochs per preview</span>
+          <input id="epoch-slider" type="range" min="1" max="10" value="1">
+          <code><span id="slider-value">1</span></code>
+        </label>
+
+        <section class="metrics" aria-label="Training metrics">
+          <article class="metric-tile">
+            <span>Epoch</span>
+            <strong id="epoch-value">0</strong>
+          </article>
+          <article class="metric-tile">
+            <span>MSE loss</span>
+            <strong id="loss-value">--</strong>
+          </article>
+          <article class="metric-tile">
+            <span>PSNR</span>
+            <strong id="psnr-value">--</strong>
+          </article>
+          <article class="metric-tile">
+            <span>Device</span>
+            <strong id="device-value">--</strong>
+          </article>
+        </section>
+
+        <section class="chart-panel" aria-label="Loss chart">
+          <div class="chart-heading">
+            <span>Loss trace</span>
+            <code id="timing-value">--</code>
+          </div>
+          <canvas id="loss-chart" width="720" height="250"></canvas>
+          <p id="error-message" class="error-message" hidden></p>
+        </section>
+      </aside>
+    </section>
+  </main>
+
+  <script src="/script.js"></script>
+</body>
+</html>
