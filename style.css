@@ -173,6 +173,28 @@ figcaption code,
   gap: 7px;
 }
 
+.webcam-button {
+  justify-content: flex-start;
+  min-height: 40px;
+  padding-inline: 14px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.webcam-button::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  margin-right: 9px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.webcam-button.is-active {
+  background: var(--accent);
+  color: #ffffff;
+}
+
 .image-option {
   position: relative;
   display: block;

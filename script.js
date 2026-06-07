@@ -19,6 +19,7 @@ const startButton = document.getElementById("start-button");
 const stopButton = document.getElementById("stop-button");
 const stepButton = document.getElementById("step-button");
 const resetButton = document.getElementById("reset-button");
+const webcamButton = document.getElementById("webcam-button");
 const slider = document.getElementById("epoch-slider");
 const sliderValue = document.getElementById("slider-value");
 const imagePicker = document.getElementById("image-picker");
@@ -43,7 +44,12 @@ const experiment = {
   training: false,
   stopRequested: false,
   pendingImageName: null,
+  inputMode: "image",
+  webcamStream: null,
+  webcamVideo: null,
+  webcamPreviewFrame: 0,
   epoch: 0,
+  optimizerEpoch: 0,
   loss: null,
   psnr: null,
   lossHistory: [],
@@ -215,6 +221,7 @@ function buildModel() {
   experiment.layers = [];
   experiment.variables = [];
   experiment.currentLearningRate = MODEL.learningRate;
+  experiment.optimizerEpoch = 0;
 
   let inputDim = MODEL.featureDim;
   for (let layerIndex = 0; layerIndex < MODEL.layers; layerIndex += 1) {
@@ -252,6 +259,7 @@ function resetOptimizerState() {
     experiment.optimizer.dispose();
   }
   experiment.currentLearningRate = MODEL.learningRate;
+  experiment.optimizerEpoch = 0;
   experiment.optimizer = tf.train.adam(MODEL.learningRate);
 }
 
@@ -277,9 +285,10 @@ function trainOneEpoch() {
   }, false, experiment.variables);
 
   experiment.epoch += 1;
+  experiment.optimizerEpoch += 1;
   experiment.currentLearningRate = Math.max(
     MODEL.minLearningRate,
-    MODEL.learningRate * MODEL.lrDecay ** experiment.epoch,
+    MODEL.learningRate * MODEL.lrDecay ** experiment.optimizerEpoch,
   );
   if (typeof experiment.optimizer.setLearningRate === "function") {
     experiment.optimizer.setLearningRate(experiment.currentLearningRate);
@@ -337,6 +346,16 @@ async function trainChunk(epochs) {
   renderState();
 
   try {
+    if (isWebcamActive()) {
+      const sampled = await sampleWebcamTarget({
+        resetOptimizer: true,
+        appendHistory: false,
+        publish: false,
+      });
+      if (!sampled) {
+        throw new Error("Webcam frame is not ready yet.");
+      }
+    }
     for (let index = 0; index < epochs; index += 1) {
       trainOneEpoch();
     }
@@ -382,6 +401,10 @@ function requestStop() {
   renderState();
 }
 
+function isWebcamActive() {
+  return Boolean(experiment.webcamStream && experiment.webcamVideo);
+}
+
 async function applyPendingImageSwitch() {
   if (!experiment.pendingImageName || experiment.training) {
     return;
@@ -389,6 +412,200 @@ async function applyPendingImageSwitch() {
   const imageName = experiment.pendingImageName;
   experiment.pendingImageName = null;
   await selectImage(imageName, { resetModel: false, force: true });
+}
+
+function drawWebcamFrameToReferenceCanvas() {
+  const video = experiment.webcamVideo;
+  if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    return false;
+  }
+
+  const sourceWidth = video.videoWidth || TARGET_SIZE;
+  const sourceHeight = video.videoHeight || TARGET_SIZE;
+  const sourceSize = Math.min(sourceWidth, sourceHeight);
+  const sourceX = Math.max(0, (sourceWidth - sourceSize) / 2);
+  const sourceY = Math.max(0, (sourceHeight - sourceSize) / 2);
+
+  referenceContext.clearRect(0, 0, TARGET_SIZE, TARGET_SIZE);
+  referenceContext.drawImage(
+    video,
+    sourceX,
+    sourceY,
+    sourceSize,
+    sourceSize,
+    0,
+    0,
+    TARGET_SIZE,
+    TARGET_SIZE,
+  );
+  return true;
+}
+
+function updateTargetTensorFromReferenceCanvas() {
+  const imageData = referenceContext.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE).data;
+  const target = new Float32Array(PIXEL_COUNT * 3);
+  for (let source = 0, targetIndex = 0; source < imageData.length; source += 4, targetIndex += 3) {
+    target[targetIndex] = imageData[source] / 255;
+    target[targetIndex + 1] = imageData[source + 1] / 255;
+    target[targetIndex + 2] = imageData[source + 2] / 255;
+  }
+  const nextTargetTensor = tf.tensor2d(target, [PIXEL_COUNT, 3]);
+  disposeTarget();
+  experiment.targetTensor = nextTargetTensor;
+}
+
+async function sampleWebcamTarget(options = {}) {
+  const {
+    resetOptimizer = true,
+    appendHistory = false,
+    publish = false,
+  } = options;
+
+  if (!drawWebcamFrameToReferenceCanvas()) {
+    return false;
+  }
+
+  if (experiment.ready) {
+    updateTargetTensorFromReferenceCanvas();
+    if (resetOptimizer && experiment.variables.length > 0) {
+      resetOptimizerState();
+    }
+    if (publish && experiment.variables.length > 0) {
+      await publishPreview(performance.now(), { appendHistory });
+    }
+  }
+  return true;
+}
+
+function startWebcamPreviewLoop() {
+  cancelAnimationFrame(experiment.webcamPreviewFrame);
+  const draw = () => {
+    if (!isWebcamActive()) {
+      return;
+    }
+    drawWebcamFrameToReferenceCanvas();
+    experiment.webcamPreviewFrame = requestAnimationFrame(draw);
+  };
+  experiment.webcamPreviewFrame = requestAnimationFrame(draw);
+}
+
+function stopWebcam() {
+  cancelAnimationFrame(experiment.webcamPreviewFrame);
+  experiment.webcamPreviewFrame = 0;
+  if (experiment.webcamStream) {
+    for (const track of experiment.webcamStream.getTracks()) {
+      track.stop();
+    }
+  }
+  if (experiment.webcamVideo) {
+    experiment.webcamVideo.pause();
+    experiment.webcamVideo.srcObject = null;
+  }
+  experiment.webcamStream = null;
+  experiment.webcamVideo = null;
+  experiment.inputMode = "image";
+  renderState();
+}
+
+async function waitForVideoReady(video) {
+  if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) {
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for webcam video."));
+    }, 10000);
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      video.removeEventListener("loadedmetadata", onReady);
+      video.removeEventListener("canplay", onReady);
+      video.removeEventListener("error", onError);
+    };
+    const onReady = () => {
+      if (video.videoWidth > 0) {
+        cleanup();
+        resolve();
+      }
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("Could not start webcam video."));
+    };
+    video.addEventListener("loadedmetadata", onReady);
+    video.addEventListener("canplay", onReady);
+    video.addEventListener("error", onError);
+  });
+}
+
+async function startWebcam() {
+  if (!experiment.ready || experiment.training || experiment.running) {
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    showError("Webcam input is not available in this browser.");
+    return;
+  }
+
+  hideError();
+  experiment.training = true;
+  renderState();
+
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        width: { ideal: 640 },
+        height: { ideal: 640 },
+        facingMode: "user",
+      },
+    });
+
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = stream;
+    await video.play();
+    await waitForVideoReady(video);
+
+    stopWebcam();
+    experiment.inputMode = "webcam";
+    experiment.webcamStream = stream;
+    experiment.webcamVideo = video;
+    experiment.currentImage = null;
+    experiment.pendingImageName = null;
+
+    startWebcamPreviewLoop();
+    await sampleWebcamTarget({
+      resetOptimizer: true,
+      appendHistory: false,
+      publish: true,
+    });
+  } catch (error) {
+    if (stream && !isWebcamActive()) {
+      for (const track of stream.getTracks()) {
+        track.stop();
+      }
+    }
+    showError(String(error));
+  } finally {
+    experiment.training = false;
+    renderState();
+  }
+
+  if (isWebcamActive() && !experiment.running) {
+    runContinuous();
+  }
+}
+
+function toggleWebcam() {
+  if (isWebcamActive()) {
+    requestStop();
+    stopWebcam();
+  } else {
+    startWebcam();
+  }
 }
 
 function drawOutput(values) {
@@ -427,16 +644,7 @@ async function loadReferenceImage(imageInfo, createTensor) {
     return;
   }
 
-  const imageData = referenceContext.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE).data;
-  const target = new Float32Array(PIXEL_COUNT * 3);
-  for (let source = 0, targetIndex = 0; source < imageData.length; source += 4, targetIndex += 3) {
-    target[targetIndex] = imageData[source] / 255;
-    target[targetIndex + 1] = imageData[source + 1] / 255;
-    target[targetIndex + 2] = imageData[source + 2] / 255;
-  }
-  const nextTargetTensor = tf.tensor2d(target, [PIXEL_COUNT, 3]);
-  disposeTarget();
-  experiment.targetTensor = nextTargetTensor;
+  updateTargetTensorFromReferenceCanvas();
 }
 
 async function selectImage(imageName, options = {}) {
@@ -452,9 +660,14 @@ async function selectImage(imageName, options = {}) {
     return;
   }
 
+  if (isWebcamActive()) {
+    stopWebcam();
+  }
+
   hideError();
   experiment.training = true;
   experiment.currentImage = imageInfo;
+  experiment.inputMode = "image";
   const shouldResetModel = resetModel || experiment.variables.length === 0;
   if (shouldResetModel) {
     experiment.epoch = 0;
@@ -486,7 +699,56 @@ async function selectImage(imageName, options = {}) {
 }
 
 async function resetExperiment() {
-  if (!experiment.currentImage || experiment.training || experiment.running) {
+  if (experiment.training || experiment.running) {
+    return;
+  }
+  if (isWebcamActive()) {
+    hideError();
+    experiment.training = true;
+    experiment.epoch = 0;
+    experiment.optimizerEpoch = 0;
+    experiment.loss = null;
+    experiment.psnr = null;
+    experiment.lossHistory = [];
+    experiment.lastUpdateSeconds = null;
+    renderState();
+    try {
+      buildModel();
+      await sampleWebcamTarget({
+        resetOptimizer: true,
+        appendHistory: false,
+        publish: true,
+      });
+    } catch (error) {
+      showError(String(error));
+    } finally {
+      experiment.training = false;
+      renderState();
+    }
+    return;
+  }
+  if (!experiment.currentImage && experiment.targetTensor) {
+    hideError();
+    experiment.training = true;
+    experiment.epoch = 0;
+    experiment.optimizerEpoch = 0;
+    experiment.loss = null;
+    experiment.psnr = null;
+    experiment.lossHistory = [];
+    experiment.lastUpdateSeconds = null;
+    renderState();
+    try {
+      buildModel();
+      await publishPreview(performance.now(), { appendHistory: false });
+    } catch (error) {
+      showError(String(error));
+    } finally {
+      experiment.training = false;
+      renderState();
+    }
+    return;
+  }
+  if (!experiment.currentImage) {
     return;
   }
   await selectImage(experiment.currentImage.name, { resetModel: true });
@@ -550,6 +812,7 @@ async function initializeApp() {
 }
 
 function renderState() {
+  const webcamActive = isWebcamActive();
   document.body.dataset.state = experiment.running
     ? experiment.stopRequested
       ? "stopping"
@@ -558,7 +821,7 @@ function renderState() {
       ? "working"
       : "idle";
 
-  referenceMeta.textContent = `${TARGET_SIZE} x ${TARGET_SIZE}`;
+  referenceMeta.textContent = webcamActive ? `webcam ${TARGET_SIZE}` : `${TARGET_SIZE} x ${TARGET_SIZE}`;
   epochValue.textContent = String(experiment.epoch);
   outputMeta.textContent = `epoch ${experiment.epoch}`;
   lossValue.textContent = formatLoss(experiment.loss);
@@ -571,7 +834,10 @@ function renderState() {
   startButton.disabled = !experiment.ready || experiment.running || experiment.training;
   stopButton.disabled = !experiment.running || experiment.stopRequested;
   stepButton.disabled = !experiment.ready || experiment.running || experiment.training;
-  resetButton.disabled = !experiment.ready || experiment.running || experiment.training;
+  resetButton.disabled = !experiment.ready || experiment.running || experiment.training || !experiment.targetTensor;
+  webcamButton.textContent = webcamActive ? "Stop webcam" : "Use webcam";
+  webcamButton.classList.toggle("is-active", webcamActive);
+  webcamButton.disabled = !experiment.ready || (!webcamActive && (experiment.running || experiment.training));
   setImageButtonsDisabled(experiment.images.length === 0);
   renderImageOptions();
   drawLossChart(experiment.lossHistory);
@@ -754,6 +1020,10 @@ stepButton.addEventListener("click", () => {
 
 resetButton.addEventListener("click", () => {
   resetExperiment();
+});
+
+webcamButton.addEventListener("click", () => {
+  toggleWebcam();
 });
 
 window.addEventListener("resize", () => drawLossChart(experiment.lossHistory));
