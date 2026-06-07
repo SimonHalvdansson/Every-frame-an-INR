@@ -3,27 +3,27 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Every frame an INR</title>
+  <title>Every Frame an INR</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
   <main class="shell">
-    <header class="topbar">
-      <h1>Every frame an INR</h1>
-      <code id="device-value">--</code>
-    </header>
-
     <section class="lab-grid" aria-label="Interactive INR workspace">
       <div class="preview-column">
+        <header class="topbar">
+          <h1>Every Frame an INR</h1>
+          <code id="device-value">--</code>
+        </header>
+
         <div class="preview-grid">
           <figure class="image-panel reference-panel">
             <figcaption>
               <span>Reference</span>
-              <code id="reference-meta">256 x 256</code>
+              <code id="reference-meta">128 x 128</code>
             </figcaption>
             <div class="image-frame">
-              <canvas id="reference-canvas" width="256" height="256" aria-label="Reference target image"></canvas>
+              <canvas id="reference-canvas" width="128" height="128" aria-label="Reference target image"></canvas>
             </div>
           </figure>
 
@@ -33,7 +33,7 @@
               <code id="output-meta">epoch 0</code>
             </figcaption>
             <div class="image-frame">
-              <canvas id="latest-canvas" width="256" height="256" aria-label="Latest INR output"></canvas>
+              <canvas id="latest-canvas" width="128" height="128" aria-label="Latest INR output"></canvas>
             </div>
           </figure>
         </div>
@@ -91,6 +91,7 @@
                 <option value="256">256</option>
                 <option value="384">384</option>
                 <option value="512">512</option>
+                <option value="768">768</option>
               </select>
             </label>
             <label class="setting-row" for="hidden-layers-select">
@@ -111,7 +112,6 @@
                 <option value="192">192</option>
                 <option value="256">256</option>
                 <option value="384">384</option>
-                <option value="512">512</option>
               </select>
             </label>
             <label class="setting-row" for="feature-type-select">
@@ -121,9 +121,17 @@
                 <option value="gabor">Gabor</option>
               </select>
             </label>
-            <label class="setting-row toggle-row" for="layernorm-toggle">
-              <span>LayerNorm</span>
-              <input id="layernorm-toggle" type="checkbox">
+            <label class="setting-row" for="activation-select">
+              <span>Activation</span>
+              <select id="activation-select">
+                <option value="silu">SiLU</option>
+                <option value="tanh">tanh</option>
+                <option value="relu">ReLU</option>
+              </select>
+            </label>
+            <label class="setting-row toggle-row" for="rmsnorm-toggle">
+              <span>RMSNorm</span>
+              <input id="rmsnorm-toggle" type="checkbox">
             </label>
             <label class="lr-row" for="image-start-lr-slider">
               <span>Image start LR</span>
@@ -143,10 +151,17 @@
           </div>
         </section>
 
+        <section class="resolution-field" aria-label="Target resolution">
+          <span>Resolution</span>
+          <div class="resolution-picker" id="resolution-picker" role="radiogroup" aria-label="Target resolution"></div>
+        </section>
+
         <label class="slider-row" for="epoch-slider">
           <span>Epochs per preview</span>
-          <input id="epoch-slider" type="range" min="1" max="10" value="1">
-          <code><span id="slider-value">1</span></code>
+          <span class="slider-control">
+            <input id="epoch-slider" type="range" min="1" max="10" value="1">
+            <code><span id="slider-value">1</span></code>
+          </span>
         </label>
 
         <section class="metrics" aria-label="Training metrics">
@@ -178,17 +193,17 @@
 
         <section class="chart-panel" aria-label="Loss chart">
           <div class="chart-heading">
-            <span>Loss trace</span>
+            <span>Loss curve</span>
             <code id="timing-value">--</code>
           </div>
           <div class="chart-canvas-wrap">
             <canvas id="loss-chart" width="720" height="196"></canvas>
             <div class="chart-empty" id="chart-empty" aria-hidden="true">
               <svg viewBox="0 0 96 72" role="img">
-                <path d="M16 48c10-22 18-26 28-12s18 20 36-14" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
-                <circle cx="16" cy="48" r="5" fill="currentColor"/>
-                <circle cx="44" cy="36" r="5" fill="currentColor"/>
-                <circle cx="80" cy="22" r="5" fill="currentColor"/>
+                <path d="M14 18c16 2 19 12 31 17 13 5 20 3 35 19" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+                <circle cx="14" cy="18" r="5" fill="currentColor"/>
+                <circle cx="45" cy="35" r="5" fill="currentColor"/>
+                <circle cx="80" cy="54" r="5" fill="currentColor"/>
               </svg>
             </div>
           </div>

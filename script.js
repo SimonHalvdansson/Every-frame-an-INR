@@ -1,5 +1,5 @@
-const TARGET_SIZE = 256;
-const PIXEL_COUNT = TARGET_SIZE * TARGET_SIZE;
+const TARGET_SIZES = [64, 128, 256];
+const DEFAULT_TARGET_SIZE = 128;
 
 const MODEL_PRESETS = {
   small: {
@@ -8,7 +8,8 @@ const MODEL_PRESETS = {
     hiddenDim: 64,
     layers: 2,
     featureType: "fourier",
-    layerNorm: true,
+    activation: "silu",
+    rmsNorm: false,
     freqScale: 32,
     imageLearningRate: 0.012,
     imageLrDecay: 0.996,
@@ -22,7 +23,8 @@ const MODEL_PRESETS = {
     hiddenDim: 128,
     layers: 2,
     featureType: "fourier",
-    layerNorm: true,
+    activation: "silu",
+    rmsNorm: false,
     freqScale: 35,
     imageLearningRate: 0.01,
     imageLrDecay: 0.995,
@@ -36,7 +38,8 @@ const MODEL_PRESETS = {
     hiddenDim: 256,
     layers: 3,
     featureType: "fourier",
-    layerNorm: true,
+    activation: "silu",
+    rmsNorm: false,
     freqScale: 38,
     imageLearningRate: 0.0075,
     imageLrDecay: 0.996,
@@ -46,11 +49,12 @@ const MODEL_PRESETS = {
   },
   xl: {
     label: "XL",
-    featureDim: 512,
+    featureDim: 384,
     hiddenDim: 384,
     layers: 4,
     featureType: "fourier",
-    layerNorm: true,
+    activation: "silu",
+    rmsNorm: false,
     freqScale: 40,
     imageLearningRate: 0.005,
     imageLrDecay: 0.996,
@@ -61,19 +65,21 @@ const MODEL_PRESETS = {
 };
 
 const DEFAULT_MODEL_KEY = "medium";
-const STRUCTURAL_MODEL_KEYS = new Set(["featureDim", "hiddenDim", "layers", "featureType", "layerNorm"]);
+const STRUCTURAL_MODEL_KEYS = new Set(["featureDim", "hiddenDim", "layers", "featureType", "activation", "rmsNorm"]);
 
 const referenceCanvas = document.getElementById("reference-canvas");
 const referenceContext = referenceCanvas.getContext("2d", { willReadFrequently: true });
 const latestCanvas = document.getElementById("latest-canvas");
 const latestCanvasContext = latestCanvas.getContext("2d");
 const startButton = document.getElementById("start-button");
+const startButtonLabel = startButton.querySelector("span");
 const stopButton = document.getElementById("stop-button");
 const stepButton = document.getElementById("step-button");
 const resetButton = document.getElementById("reset-button");
 const webcamButton = document.getElementById("webcam-button");
 const slider = document.getElementById("epoch-slider");
 const sliderValue = document.getElementById("slider-value");
+const resolutionPicker = document.getElementById("resolution-picker");
 const mediaPicker = document.getElementById("media-picker");
 const modelToggle = document.getElementById("model-toggle");
 const modelSummary = document.getElementById("model-summary");
@@ -84,7 +90,8 @@ const hiddenDimSelect = document.getElementById("hidden-dim-select");
 const hiddenLayersSelect = document.getElementById("hidden-layers-select");
 const featureDimSelect = document.getElementById("feature-dim-select");
 const featureTypeSelect = document.getElementById("feature-type-select");
-const layerNormToggle = document.getElementById("layernorm-toggle");
+const activationSelect = document.getElementById("activation-select");
+const rmsNormToggle = document.getElementById("rmsnorm-toggle");
 const imageStartLrSlider = document.getElementById("image-start-lr-slider");
 const imageEndLrSlider = document.getElementById("image-end-lr-slider");
 const videoLrSlider = document.getElementById("video-lr-slider");
@@ -109,6 +116,7 @@ const chartEmpty = document.getElementById("chart-empty");
 const experiment = {
   mediaItems: [],
   currentMedia: null,
+  targetSize: DEFAULT_TARGET_SIZE,
   selectedModelKey: DEFAULT_MODEL_KEY,
   modelConfig: cloneModelConfig(MODEL_PRESETS[DEFAULT_MODEL_KEY]),
   modelExpanded: false,
@@ -161,6 +169,25 @@ function assetUrl(path) {
   return new URL(path, document.baseURI).toString();
 }
 
+function currentTargetSize() {
+  return experiment.targetSize || DEFAULT_TARGET_SIZE;
+}
+
+function currentPixelCount() {
+  const size = currentTargetSize();
+  return size * size;
+}
+
+function configureCanvases() {
+  const size = currentTargetSize();
+  for (const canvas of [referenceCanvas, latestCanvas]) {
+    if (canvas.width !== size || canvas.height !== size) {
+      canvas.width = size;
+      canvas.height = size;
+    }
+  }
+}
+
 function currentModel() {
   return experiment.modelConfig || MODEL_PRESETS[DEFAULT_MODEL_KEY];
 }
@@ -199,8 +226,8 @@ function parameterCount(config) {
   let inputDim = config.featureDim;
   for (let layerIndex = 0; layerIndex < config.layers; layerIndex += 1) {
     total += inputDim * config.hiddenDim + config.hiddenDim;
-    if (config.layerNorm) {
-      total += config.hiddenDim * 2;
+    if (config.rmsNorm) {
+      total += config.hiddenDim;
     }
     inputDim = config.hiddenDim;
   }
@@ -262,6 +289,13 @@ function formatSeconds(value) {
     return `${Math.round(value * 1000)} ms`;
   }
   return `${value.toFixed(2)} s`;
+}
+
+function formatPreviewRate(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "--";
+  }
+  return `${(1 / seconds).toFixed(1)} fps`;
 }
 
 function formatVideoTime(value) {
@@ -368,13 +402,15 @@ function buildFeatureTensor() {
   }
 
   const config = currentModel();
+  const size = currentTargetSize();
+  const pixels = currentPixelCount();
   experiment.featureTensor = tf.tidy(() => {
-    const coords = createFloatTensor([PIXEL_COUNT, 2], (index) => {
+    const coords = createFloatTensor([pixels, 2], (index) => {
       const pixelIndex = Math.floor(index / 2);
       const isX = index % 2 === 0;
-      const x = pixelIndex % TARGET_SIZE;
-      const y = Math.floor(pixelIndex / TARGET_SIZE);
-      return (isX ? x : y) / (TARGET_SIZE - 1);
+      const x = pixelIndex % size;
+      const y = Math.floor(pixelIndex / size);
+      return (isX ? x : y) / (size - 1);
     });
 
     const normal = makeNormalGenerator(config.seed);
@@ -383,7 +419,7 @@ function buildFeatureTensor() {
       const centerRandom = mulberry32(config.seed + 17);
       const centers = createFloatTensor([atomCount, 2], () => centerRandom());
       const freqs = createFloatTensor([atomCount, 2], () => normal() * config.freqScale);
-      const sigmas = tf.fill([atomCount, 2], 0.1 * Math.sqrt(256 / 2));
+      const sigmas = tf.fill([atomCount, 2], 0.1 * Math.sqrt(size / 2));
       const diff = coords.expandDims(1).sub(centers.expandDims(0));
       const envelope = diff.square().div(sigmas.expandDims(0).square()).sum(2).mul(-0.5).exp();
       const phase = diff.mul(freqs.expandDims(0)).sum(2).mul(2 * Math.PI);
@@ -418,16 +454,14 @@ function buildModel() {
       config.seed + 201 + layerIndex,
       `hidden_${layerIndex}_bias`,
     );
-    let normGamma = null;
-    let normBeta = null;
-    if (config.layerNorm) {
-      normGamma = createConstantVariable([config.hiddenDim], 1, `hidden_${layerIndex}_norm_gamma`);
-      normBeta = createConstantVariable([config.hiddenDim], 0, `hidden_${layerIndex}_norm_beta`);
+    let rmsScale = null;
+    if (config.rmsNorm) {
+      rmsScale = createConstantVariable([config.hiddenDim], 1, `hidden_${layerIndex}_rms_scale`);
     }
-    experiment.layers.push({ weight, bias, activation: "silu", normGamma, normBeta });
+    experiment.layers.push({ weight, bias, activation: config.activation || "silu", rmsScale });
     experiment.variables.push(weight, bias);
-    if (normGamma && normBeta) {
-      experiment.variables.push(normGamma, normBeta);
+    if (rmsScale) {
+      experiment.variables.push(rmsScale);
     }
     inputDim = config.hiddenDim;
   }
@@ -444,11 +478,9 @@ function buildModel() {
   resetOptimizerState({ stream: isStreamTarget() });
 }
 
-function applyLayerNorm(value, gamma, beta) {
-  const mean = value.mean(1, true);
-  const centered = value.sub(mean);
-  const variance = centered.square().mean(1, true);
-  return centered.div(variance.add(1e-5).sqrt()).mul(gamma).add(beta);
+function applyRmsNorm(value, scale) {
+  const rms = value.square().mean(1, true).add(1e-5).sqrt();
+  return value.div(rms).mul(scale);
 }
 
 function resetOptimizerState(options = {}) {
@@ -479,8 +511,18 @@ function forward(features) {
     value = value.matMul(layer.weight).add(layer.bias);
     if (layer.activation === "silu") {
       value = value.mul(value.sigmoid());
-      if (layer.normGamma && layer.normBeta) {
-        value = applyLayerNorm(value, layer.normGamma, layer.normBeta);
+      if (layer.rmsScale) {
+        value = applyRmsNorm(value, layer.rmsScale);
+      }
+    } else if (layer.activation === "tanh") {
+      value = value.tanh();
+      if (layer.rmsScale) {
+        value = applyRmsNorm(value, layer.rmsScale);
+      }
+    } else if (layer.activation === "relu") {
+      value = value.relu();
+      if (layer.rmsScale) {
+        value = applyRmsNorm(value, layer.rmsScale);
       }
     } else if (layer.activation === "sigmoid") {
       value = value.sigmoid();
@@ -634,10 +676,15 @@ async function runContinuous() {
   } catch (error) {
     showError(String(error));
   } finally {
+    const releaseWebcam = isWebcamActive() && experiment.stopRequested;
     experiment.running = false;
     experiment.training = false;
     experiment.stopRequested = false;
-    renderState();
+    if (releaseWebcam) {
+      stopWebcam();
+    } else {
+      renderState();
+    }
   }
 }
 
@@ -694,11 +741,12 @@ async function applyPendingMediaSwitch() {
 }
 
 function drawCanvasSourceToReference(source, sourceWidth, sourceHeight) {
-  const sourceSize = Math.min(sourceWidth || TARGET_SIZE, sourceHeight || TARGET_SIZE);
-  const sourceX = Math.max(0, ((sourceWidth || TARGET_SIZE) - sourceSize) / 2);
-  const sourceY = Math.max(0, ((sourceHeight || TARGET_SIZE) - sourceSize) / 2);
+  const size = currentTargetSize();
+  const sourceSize = Math.min(sourceWidth || size, sourceHeight || size);
+  const sourceX = Math.max(0, ((sourceWidth || size) - sourceSize) / 2);
+  const sourceY = Math.max(0, ((sourceHeight || size) - sourceSize) / 2);
 
-  referenceContext.clearRect(0, 0, TARGET_SIZE, TARGET_SIZE);
+  referenceContext.clearRect(0, 0, size, size);
   referenceContext.drawImage(
     source,
     sourceX,
@@ -707,8 +755,8 @@ function drawCanvasSourceToReference(source, sourceWidth, sourceHeight) {
     sourceSize,
     0,
     0,
-    TARGET_SIZE,
-    TARGET_SIZE,
+    size,
+    size,
   );
 }
 
@@ -733,14 +781,16 @@ function drawVideoFrameToReferenceCanvas() {
 }
 
 function updateTargetTensorFromReferenceCanvas() {
-  const imageData = referenceContext.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE).data;
-  const target = new Float32Array(PIXEL_COUNT * 3);
+  const size = currentTargetSize();
+  const pixels = currentPixelCount();
+  const imageData = referenceContext.getImageData(0, 0, size, size).data;
+  const target = new Float32Array(pixels * 3);
   for (let source = 0, targetIndex = 0; source < imageData.length; source += 4, targetIndex += 3) {
     target[targetIndex] = imageData[source] / 255;
     target[targetIndex + 1] = imageData[source + 1] / 255;
     target[targetIndex + 2] = imageData[source + 2] / 255;
   }
-  const nextTargetTensor = tf.tensor2d(target, [PIXEL_COUNT, 3]);
+  const nextTargetTensor = tf.tensor2d(target, [pixels, 3]);
   disposeTarget();
   experiment.targetTensor = nextTargetTensor;
 }
@@ -1025,19 +1075,21 @@ function toggleWebcam() {
 }
 
 function drawOutput(values) {
-  const rgba = new Uint8ClampedArray(PIXEL_COUNT * 4);
+  const size = currentTargetSize();
+  const rgba = new Uint8ClampedArray(currentPixelCount() * 4);
   for (let source = 0, target = 0; source < values.length; source += 3, target += 4) {
     rgba[target] = Math.max(0, Math.min(255, Math.round(values[source] * 255)));
     rgba[target + 1] = Math.max(0, Math.min(255, Math.round(values[source + 1] * 255)));
     rgba[target + 2] = Math.max(0, Math.min(255, Math.round(values[source + 2] * 255)));
     rgba[target + 3] = 255;
   }
-  latestCanvasContext.putImageData(new ImageData(rgba, TARGET_SIZE, TARGET_SIZE), 0, 0);
+  latestCanvasContext.putImageData(new ImageData(rgba, size, size), 0, 0);
 }
 
 function clearOutput() {
+  const size = currentTargetSize();
   latestCanvasContext.fillStyle = "#777a73";
-  latestCanvasContext.fillRect(0, 0, TARGET_SIZE, TARGET_SIZE);
+  latestCanvasContext.fillRect(0, 0, size, size);
 }
 
 function loadImage(url) {
@@ -1051,9 +1103,10 @@ function loadImage(url) {
 }
 
 async function loadReferenceImage(mediaInfo, createTensor) {
+  const size = currentTargetSize();
   const image = await loadImage(assetUrl(mediaInfo.src));
-  referenceContext.clearRect(0, 0, TARGET_SIZE, TARGET_SIZE);
-  referenceContext.drawImage(image, 0, 0, TARGET_SIZE, TARGET_SIZE);
+  referenceContext.clearRect(0, 0, size, size);
+  referenceContext.drawImage(image, 0, 0, size, size);
 
   if (!createTensor) {
     disposeTarget();
@@ -1131,6 +1184,19 @@ function clampLearningRates() {
 
 async function updateModelSetting(key, value) {
   if (experiment.running || experiment.training) {
+    if (key === "streamLearningRate") {
+      const config = currentModel();
+      if (config[key] !== value) {
+        experiment.selectedModelKey = "custom";
+        experiment.modelConfig = {
+          ...config,
+          [key]: value,
+        };
+        if (isStreamTarget()) {
+          syncCurrentLearningRate();
+        }
+      }
+    }
     renderState();
     return;
   }
@@ -1273,6 +1339,46 @@ async function changeModelPreset(modelKey) {
   await rebuildForModelConfig({ rebuildFeature: true, resetMetrics: true });
 }
 
+async function changeTargetSize(size) {
+  if (!TARGET_SIZES.includes(size) || size === currentTargetSize() || experiment.running || experiment.training) {
+    return;
+  }
+
+  hideError();
+  experiment.targetSize = size;
+  configureCanvases();
+  disposeFeatureTensor();
+  resetRunMetrics();
+  experiment.training = true;
+  renderState();
+
+  try {
+    if (experiment.ready) {
+      buildModel();
+      if (isWebcamActive()) {
+        resetOptimizerState({ stream: true });
+        await sampleWebcamTarget({ appendHistory: false, publish: true });
+      } else if (isVideoTarget()) {
+        resetOptimizerState({ stream: true });
+        await sampleVideoTarget({ appendHistory: false, publish: true });
+      } else if (experiment.currentMedia) {
+        await loadReferenceImage(experiment.currentMedia, true);
+        resetOptimizerState({ stream: false });
+        await publishPreview(performance.now(), { appendHistory: false });
+      } else {
+        clearOutput();
+      }
+    } else {
+      clearOutput();
+    }
+  } catch (error) {
+    showError(String(error));
+  } finally {
+    experiment.training = false;
+    renderState();
+  }
+}
+
 async function loadManifest() {
   const response = await fetch(assetUrl("media/images.json"), { cache: "no-store" });
   if (!response.ok) {
@@ -1312,8 +1418,10 @@ async function initializeTensorFlow() {
 }
 
 async function initializeApp() {
+  configureCanvases();
   updateSliderProgress();
   clearOutput();
+  renderResolutionOptions();
   renderModelOptions();
   renderState();
 
@@ -1339,7 +1447,7 @@ async function initializeApp() {
 
 function referenceMetaText() {
   if (isWebcamActive()) {
-    return `webcam ${TARGET_SIZE}`;
+    return `webcam ${currentTargetSize()}`;
   }
   if (isVideoSelected()) {
     const current = experiment.videoStats.currentTime;
@@ -1347,13 +1455,14 @@ function referenceMetaText() {
     return `${formatVideoTime(current)} / ${formatVideoTime(duration)}`;
   }
   if (!experiment.currentMedia && experiment.targetTensor) {
-    return `still ${TARGET_SIZE}`;
+    return `still ${currentTargetSize()}`;
   }
-  return `${TARGET_SIZE} x ${TARGET_SIZE}`;
+  return `${currentTargetSize()} x ${currentTargetSize()}`;
 }
 
 function renderState() {
   const webcamActive = isWebcamActive();
+  const canResume = experiment.epoch > 0;
   document.body.dataset.state = experiment.running
     ? experiment.stopRequested
       ? "stopping"
@@ -1377,9 +1486,10 @@ function renderState() {
   }
   deviceValue.textContent = experiment.ready ? tf.getBackend() : experiment.unsupported ? "No WebGPU" : "--";
   timingValue.textContent = experiment.lastUpdateSeconds
-    ? `preview ${formatSeconds(experiment.lastUpdateSeconds)}`
+    ? formatPreviewRate(experiment.lastUpdateSeconds)
     : "--";
 
+  startButtonLabel.textContent = canResume ? "Resume" : "Start";
   startButton.disabled = !experiment.ready || experiment.running || experiment.training || !experiment.targetTensor;
   stopButton.disabled = !experiment.running || experiment.stopRequested;
   stepButton.disabled = !experiment.ready || experiment.running || experiment.training || isVideoSelected() || !experiment.targetTensor;
@@ -1388,10 +1498,33 @@ function renderState() {
   webcamButton.classList.toggle("is-active", webcamActive);
   webcamButton.disabled = !experiment.ready || (!webcamActive && (experiment.running || experiment.training));
   setMediaButtonsDisabled(experiment.mediaItems.length === 0);
+  renderResolutionOptions();
   renderMediaOptions();
   renderModelOptions();
   renderModelSettings();
   drawLossChart(experiment.lossHistory);
+}
+
+function renderResolutionOptions() {
+  if (resolutionPicker.children.length === 0) {
+    for (const size of TARGET_SIZES) {
+      const button = document.createElement("button");
+      button.className = "resolution-option";
+      button.type = "button";
+      button.dataset.size = String(size);
+      button.setAttribute("role", "radio");
+      button.textContent = `${size}x${size}`;
+      button.addEventListener("click", () => changeTargetSize(size));
+      resolutionPicker.append(button);
+    }
+  }
+
+  for (const button of resolutionPicker.querySelectorAll(".resolution-option")) {
+    const selected = Number.parseInt(button.dataset.size, 10) === currentTargetSize();
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-checked", String(selected));
+    button.disabled = experiment.running || experiment.training;
+  }
 }
 
 function renderMediaOptions() {
@@ -1471,7 +1604,8 @@ function renderModelSettings() {
   hiddenLayersSelect.value = String(config.layers);
   featureDimSelect.value = String(config.featureDim);
   featureTypeSelect.value = config.featureType || "fourier";
-  layerNormToggle.checked = Boolean(config.layerNorm);
+  activationSelect.value = config.activation || "silu";
+  rmsNormToggle.checked = Boolean(config.rmsNorm);
 
   imageStartLrSlider.value = String(lrToSliderValue(config.imageLearningRate));
   imageEndLrSlider.value = String(lrToSliderValue(config.imageMinLearningRate));
@@ -1487,13 +1621,14 @@ function renderModelSettings() {
     hiddenLayersSelect,
     featureDimSelect,
     featureTypeSelect,
-    layerNormToggle,
+    activationSelect,
+    rmsNormToggle,
     imageStartLrSlider,
     imageEndLrSlider,
-    videoLrSlider,
   ]) {
     control.disabled = disabled;
   }
+  videoLrSlider.disabled = !experiment.ready;
 }
 
 function prepareCanvas() {
@@ -1659,8 +1794,12 @@ featureTypeSelect.addEventListener("change", () => {
   updateModelSetting("featureType", featureTypeSelect.value);
 });
 
-layerNormToggle.addEventListener("change", () => {
-  updateModelSetting("layerNorm", layerNormToggle.checked);
+activationSelect.addEventListener("change", () => {
+  updateModelSetting("activation", activationSelect.value);
+});
+
+rmsNormToggle.addEventListener("change", () => {
+  updateModelSetting("rmsNorm", rmsNormToggle.checked);
 });
 
 imageStartLrSlider.addEventListener("input", () => {
@@ -1675,7 +1814,9 @@ videoLrSlider.addEventListener("input", () => {
   updateModelSetting("streamLearningRate", sliderValueToLr(videoLrSlider.value));
 });
 
-window.addEventListener("resize", () => drawLossChart(experiment.lossHistory));
+window.addEventListener("resize", () => {
+  drawLossChart(experiment.lossHistory);
+});
 window.addEventListener("blur", pauseWebcamForInactivePage);
 window.addEventListener("focus", resumeWebcamForActivePage);
 window.addEventListener("pagehide", pauseWebcamForInactivePage);
