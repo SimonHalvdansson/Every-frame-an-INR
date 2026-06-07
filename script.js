@@ -247,6 +247,14 @@ function buildModel() {
   experiment.optimizer = tf.train.adam(MODEL.learningRate);
 }
 
+function resetOptimizerState() {
+  if (experiment.optimizer?.dispose) {
+    experiment.optimizer.dispose();
+  }
+  experiment.currentLearningRate = MODEL.learningRate;
+  experiment.optimizer = tf.train.adam(MODEL.learningRate);
+}
+
 function forward(features) {
   let value = features;
   for (const layer of experiment.layers) {
@@ -462,6 +470,8 @@ async function selectImage(imageName, options = {}) {
     if (experiment.ready) {
       if (shouldResetModel) {
         buildModel();
+      } else {
+        resetOptimizerState();
       }
       await publishPreview(performance.now());
     } else {
