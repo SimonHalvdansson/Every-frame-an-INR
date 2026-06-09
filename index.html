@@ -58,6 +58,19 @@
             <span>Reset</span>
           </button>
         </div>
+
+        <section class="weights-panel" aria-label="Network weights">
+          <button id="weights-toggle" class="weights-toggle" type="button" aria-expanded="false" aria-controls="weights-contents">
+            <span>Weights</span>
+            <code id="weights-summary">--</code>
+            <svg class="caret-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m7 10 5 5 5-5"/>
+            </svg>
+          </button>
+          <div class="weights-contents" id="weights-contents" aria-hidden="true">
+            <div class="weights-strip" id="weights-strip"></div>
+          </div>
+        </section>
       </div>
 
       <aside class="side-panel" aria-label="Controls and metrics">
@@ -114,6 +127,11 @@
                 <option value="fourier">Fourier</option>
                 <option value="gabor">Gabor</option>
               </select>
+            </label>
+            <label class="lr-row gabor-width-row" for="gabor-atom-width-slider">
+              <span>Atom width</span>
+              <input id="gabor-atom-width-slider" type="range" min="0.01" max="0.5" step="0.005">
+              <code id="gabor-atom-width-value">--</code>
             </label>
             <label class="setting-row" for="activation-select">
               <span>Activation</span>

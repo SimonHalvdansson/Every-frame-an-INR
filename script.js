@@ -11,6 +11,7 @@ const MODEL_PRESETS = {
     activation: "silu",
     rmsNorm: false,
     freqScale: 32,
+    gaborAtomWidth: 0.1,
     imageLearningRate: 0.012,
     imageLrDecay: 0.996,
     imageMinLearningRate: 0.0015,
@@ -26,6 +27,7 @@ const MODEL_PRESETS = {
     activation: "silu",
     rmsNorm: false,
     freqScale: 35,
+    gaborAtomWidth: 0.1,
     imageLearningRate: 0.01,
     imageLrDecay: 0.995,
     imageMinLearningRate: 0.001,
@@ -41,6 +43,7 @@ const MODEL_PRESETS = {
     activation: "silu",
     rmsNorm: false,
     freqScale: 38,
+    gaborAtomWidth: 0.1,
     imageLearningRate: 0.0075,
     imageLrDecay: 0.996,
     imageMinLearningRate: 0.0008,
@@ -56,6 +59,7 @@ const MODEL_PRESETS = {
     activation: "silu",
     rmsNorm: false,
     freqScale: 40,
+    gaborAtomWidth: 0.1,
     imageLearningRate: 0.005,
     imageLrDecay: 0.996,
     imageMinLearningRate: 0.0006,
@@ -90,6 +94,8 @@ const hiddenDimSelect = document.getElementById("hidden-dim-select");
 const hiddenLayersSelect = document.getElementById("hidden-layers-select");
 const featureDimSelect = document.getElementById("feature-dim-select");
 const featureTypeSelect = document.getElementById("feature-type-select");
+const gaborAtomWidthSlider = document.getElementById("gabor-atom-width-slider");
+const gaborAtomWidthValue = document.getElementById("gabor-atom-width-value");
 const activationSelect = document.getElementById("activation-select");
 const rmsNormToggle = document.getElementById("rmsnorm-toggle");
 const imageStartLrSlider = document.getElementById("image-start-lr-slider");
@@ -112,6 +118,11 @@ const errorMessage = document.getElementById("error-message");
 const lossChart = document.getElementById("loss-chart");
 const chartContext = lossChart.getContext("2d");
 const chartEmpty = document.getElementById("chart-empty");
+const weightsToggle = document.getElementById("weights-toggle");
+const weightsSummary = document.getElementById("weights-summary");
+const weightsContents = document.getElementById("weights-contents");
+const weightsPanel = weightsToggle.closest(".weights-panel");
+const weightsStrip = document.getElementById("weights-strip");
 
 const experiment = {
   mediaItems: [],
@@ -126,6 +137,7 @@ const experiment = {
   training: false,
   stopRequested: false,
   pendingMediaName: null,
+  pendingOperation: null,
   inputMode: "image",
   webcamStream: null,
   webcamVideo: null,
@@ -148,6 +160,10 @@ const experiment = {
   optimizer: null,
   currentLearningRate: MODEL_PRESETS[DEFAULT_MODEL_KEY].imageLearningRate,
   tensorBaseline: 0,
+  weightsExpanded: false,
+  weightRenderId: 0,
+  weightRenderInFlight: false,
+  weightRenderQueued: false,
   error: null,
 };
 
@@ -213,6 +229,10 @@ function isStreamTarget() {
   return isWebcamActive() || isWebcamResumePending() || isVideoTarget();
 }
 
+function isOperationBusy() {
+  return experiment.training || experiment.running;
+}
+
 function previewCount() {
   return Number.parseInt(slider.value, 10);
 }
@@ -276,6 +296,13 @@ function formatLearningRate(value) {
     return "--";
   }
   return value < 0.001 ? value.toExponential(2) : value.toFixed(4);
+}
+
+function formatAtomWidth(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "--";
+  }
+  return value.toFixed(3);
 }
 
 function lrToSliderValue(value) {
@@ -376,6 +403,7 @@ function createConstantVariable(shape, value, name) {
 }
 
 function disposeModel() {
+  experiment.weightRenderId += 1;
   for (const variable of experiment.variables) {
     variable.dispose();
   }
@@ -424,7 +452,7 @@ function buildFeatureTensor() {
       const centerRandom = mulberry32(config.seed + 17);
       const centers = createFloatTensor([atomCount, 2], () => centerRandom());
       const freqs = createFloatTensor([atomCount, 2], () => normal() * config.freqScale);
-      const sigmas = tf.fill([atomCount, 2], 0.1 * Math.sqrt(size / 2));
+      const sigmas = tf.fill([atomCount, 2], config.gaborAtomWidth ?? 0.1);
       const diff = coords.expandDims(1).sub(centers.expandDims(0));
       const envelope = diff.square().div(sigmas.expandDims(0).square()).sum(2).mul(-0.5).exp();
       const phase = diff.mul(freqs.expandDims(0)).sum(2).mul(2 * Math.PI);
@@ -481,6 +509,7 @@ function buildModel() {
   experiment.layers.push({ weight: outputWeight, bias: outputBias, activation: "sigmoid" });
   experiment.variables.push(outputWeight, outputBias);
   resetOptimizerState({ stream: isStreamTarget() });
+  queueWeightRender();
 }
 
 function applyRmsNorm(value, scale) {
@@ -619,6 +648,7 @@ async function publishPreview(startedAt, options = {}) {
     previewMs: Math.round(experiment.lastUpdateSeconds * 1000),
     lr: experiment.currentLearningRate,
   });
+  queueWeightRender();
 }
 
 async function refreshDynamicTarget() {
@@ -664,7 +694,11 @@ async function trainChunk(epochs) {
     renderState();
   }
 
-  await applyPendingMediaSwitch();
+  if (experiment.running) {
+    await applyPendingMediaSwitch();
+  } else {
+    await applyPendingOperation();
+  }
 }
 
 async function runContinuous() {
@@ -694,7 +728,7 @@ async function runContinuous() {
   } catch (error) {
     showError(String(error));
   } finally {
-    const releaseWebcam = isWebcamActive() && experiment.stopRequested;
+    const releaseWebcam = isWebcamActive() && experiment.stopRequested && !experiment.pendingOperation;
     experiment.running = false;
     experiment.training = false;
     experiment.stopRequested = false;
@@ -703,6 +737,7 @@ async function runContinuous() {
     } else {
       renderState();
     }
+    await applyPendingOperation();
   }
 }
 
@@ -744,6 +779,7 @@ async function runVideoContinuous() {
     experiment.training = false;
     experiment.stopRequested = false;
     renderState();
+    await applyPendingOperation();
   }
 }
 
@@ -753,7 +789,7 @@ function requestStop() {
 }
 
 async function applyPendingMediaSwitch() {
-  if (!experiment.pendingMediaName || experiment.training) {
+  if (experiment.pendingOperation || !experiment.pendingMediaName || experiment.training) {
     return;
   }
   const mediaName = experiment.pendingMediaName;
@@ -1036,7 +1072,11 @@ async function restartVideoPlayback() {
 }
 
 async function startWebcam() {
-  if (!experiment.ready || experiment.training || experiment.running) {
+  if (!experiment.ready) {
+    return;
+  }
+  if (isOperationBusy()) {
+    queuePendingOperation({ type: "webcamStart" });
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia) {
@@ -1101,8 +1141,11 @@ async function startWebcam() {
 
 function toggleWebcam() {
   if (isWebcamActive()) {
-    requestStop();
-    stopWebcam({ keepResumeMode: false });
+    if (isOperationBusy()) {
+      queuePendingOperation({ type: "webcamStop" });
+    } else {
+      stopWebcam({ keepResumeMode: false });
+    }
   } else {
     startWebcam();
   }
@@ -1118,6 +1161,241 @@ function drawOutput(values) {
     rgba[target + 3] = 255;
   }
   latestCanvasContext.putImageData(new ImageData(rgba, size, size), 0, 0);
+}
+
+function formatWeightName(name) {
+  const hiddenMatch = name.match(/^hidden_(\d+)_(weight|bias|rms_scale)$/);
+  if (hiddenMatch) {
+    const layerNumber = Number.parseInt(hiddenMatch[1], 10) + 1;
+    const kind = hiddenMatch[2] === "weight"
+      ? "W"
+      : hiddenMatch[2] === "bias"
+        ? "b"
+        : "RMS";
+    return `H${layerNumber} ${kind}`;
+  }
+  if (name === "output_weight") {
+    return "Out W";
+  }
+  if (name === "output_bias") {
+    return "Out b";
+  }
+  return name.replaceAll("_", " ");
+}
+
+function weightShapeText(shape) {
+  return shape.length > 0 ? shape.join("x") : "scalar";
+}
+
+function weightGridShape(shape) {
+  if (shape.length === 1) {
+    return { rows: Math.max(1, shape[0]), columns: 1 };
+  }
+  if (shape.length === 2) {
+    return { rows: Math.max(1, shape[1]), columns: Math.max(1, shape[0]) };
+  }
+
+  const count = Math.max(1, shape.reduce((product, value) => product * value, 1));
+  const columns = Math.ceil(Math.sqrt(count));
+  return { rows: Math.ceil(count / columns), columns };
+}
+
+function renderWeightBlocks(variables) {
+  const signature = variables
+    .map((variable) => `${variable.name}:${weightShapeText(variable.shape)}`)
+    .join("|");
+  if (weightsStrip.dataset.signature === signature) {
+    return;
+  }
+
+  weightsStrip.dataset.signature = signature;
+  weightsStrip.replaceChildren();
+  if (variables.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "weight-empty";
+    empty.textContent = "No tensors";
+    weightsStrip.append(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  variables.forEach((variable, index) => {
+    const { rows, columns } = weightGridShape(variable.shape);
+    const isVector = variable.shape.length === 1;
+    const article = document.createElement("article");
+    article.className = "weight-block";
+    article.classList.toggle("is-vector", isVector);
+    article.classList.toggle("is-matrix", !isVector);
+    article.style.setProperty("--weight-aspect", `${columns} / ${rows}`);
+    article.style.setProperty(
+      "--weight-block-width",
+      isVector
+        ? "58px"
+        : `${Math.min(380, Math.max(240, Math.round(columns * 1.25)))}px`,
+    );
+    article.style.setProperty("--weight-columns", String(columns));
+    article.style.setProperty("--weight-rows", String(rows));
+    article.title = `${variable.name} ${weightShapeText(variable.shape)}`;
+
+    const header = document.createElement("header");
+    const label = document.createElement("span");
+    label.textContent = formatWeightName(variable.name);
+    const shape = document.createElement("code");
+    shape.textContent = weightShapeText(variable.shape);
+    header.append(label, shape);
+
+    const canvasWrap = document.createElement("div");
+    canvasWrap.className = "weight-canvas-wrap";
+    const canvas = document.createElement("canvas");
+    canvas.width = columns;
+    canvas.height = rows;
+    canvas.dataset.weightIndex = String(index);
+    canvas.setAttribute("aria-label", `${formatWeightName(variable.name)} weights`);
+    canvasWrap.append(canvas);
+
+    article.append(header, canvasWrap);
+    fragment.append(article);
+  });
+
+  weightsStrip.append(fragment);
+}
+
+function weightColorScale(values) {
+  let maxAbs = 0;
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (Number.isFinite(value)) {
+      maxAbs = Math.max(maxAbs, Math.abs(value));
+    }
+  }
+  return maxAbs || 1;
+}
+
+function mixChannel(start, end, amount) {
+  return Math.round(start + (end - start) * amount);
+}
+
+function weightColor(value, scale) {
+  const neutral = [248, 246, 242];
+  const negative = [47, 112, 168];
+  const positive = [190, 61, 83];
+  const amount = Math.sqrt(Math.min(1, Math.abs(value) / scale));
+  const target = value < 0 ? negative : positive;
+  return [
+    mixChannel(neutral[0], target[0], amount),
+    mixChannel(neutral[1], target[1], amount),
+    mixChannel(neutral[2], target[2], amount),
+  ];
+}
+
+function weightValueAt(values, shape, x, y, columns) {
+  if (shape.length === 1) {
+    return values[y] ?? 0;
+  }
+  if (shape.length === 2) {
+    return values[x * shape[1] + y] ?? 0;
+  }
+  return values[y * columns + x] ?? 0;
+}
+
+function drawWeightCanvas(canvas, values, shape) {
+  const { rows, columns } = weightGridShape(shape);
+  if (canvas.width !== columns || canvas.height !== rows) {
+    canvas.width = columns;
+    canvas.height = rows;
+  }
+
+  const context = canvas.getContext("2d");
+  const imageData = context.createImageData(columns, rows);
+  const scale = weightColorScale(values);
+
+  for (let y = 0; y < rows; y += 1) {
+    for (let x = 0; x < columns; x += 1) {
+      const rawValue = weightValueAt(values, shape, x, y, columns);
+      const value = Number.isFinite(rawValue) ? rawValue : 0;
+      const [red, green, blue] = weightColor(value, scale);
+      const target = (y * columns + x) * 4;
+      imageData.data[target] = red;
+      imageData.data[target + 1] = green;
+      imageData.data[target + 2] = blue;
+      imageData.data[target + 3] = 255;
+    }
+  }
+
+  context.putImageData(imageData, 0, 0);
+}
+
+async function renderWeights(renderId) {
+  const variables = experiment.variables.slice();
+  renderWeightBlocks(variables);
+  if (variables.length === 0) {
+    return;
+  }
+
+  for (let index = 0; index < variables.length; index += 1) {
+    const variable = variables[index];
+    let values;
+    try {
+      values = await variable.data();
+    } catch (error) {
+      if (renderId === experiment.weightRenderId && experiment.weightsExpanded) {
+        window.setTimeout(() => {
+          if (experiment.weightsExpanded) {
+            queueWeightRender();
+          }
+        }, 80);
+      }
+      return;
+    }
+
+    if (renderId !== experiment.weightRenderId || !experiment.weightsExpanded) {
+      return;
+    }
+
+    const canvas = weightsStrip.querySelector(`canvas[data-weight-index="${index}"]`);
+    if (canvas) {
+      drawWeightCanvas(canvas, values, variable.shape);
+    }
+    await tf.nextFrame();
+  }
+}
+
+function queueWeightRender() {
+  experiment.weightRenderId += 1;
+  experiment.weightRenderQueued = true;
+  if (!experiment.weightsExpanded) {
+    return;
+  }
+  runQueuedWeightRender();
+}
+
+async function runQueuedWeightRender() {
+  if (experiment.weightRenderInFlight || !experiment.weightsExpanded) {
+    return;
+  }
+
+  experiment.weightRenderInFlight = true;
+  try {
+    while (experiment.weightRenderQueued && experiment.weightsExpanded) {
+      experiment.weightRenderQueued = false;
+      await renderWeights(experiment.weightRenderId);
+    }
+  } finally {
+    experiment.weightRenderInFlight = false;
+  }
+
+  if (experiment.weightRenderQueued && experiment.weightsExpanded) {
+    runQueuedWeightRender();
+  }
+}
+
+async function forceWeightRender() {
+  if (!experiment.weightsExpanded) {
+    return;
+  }
+  experiment.weightRenderId += 1;
+  experiment.weightRenderQueued = false;
+  await renderWeights(experiment.weightRenderId);
 }
 
 function clearOutput() {
@@ -1160,6 +1438,63 @@ function resetRunMetrics() {
   experiment.videoStats = makeEmptyVideoStats();
 }
 
+function queuePendingOperation(operation) {
+  if (operation.resume === undefined) {
+    operation.resume = experiment.running && operation.type !== "webcamStop";
+  }
+  experiment.pendingOperation = operation;
+  if (operation.type === "media") {
+    experiment.pendingMediaName = operation.mediaName;
+  }
+  if (experiment.running) {
+    requestStop();
+  } else {
+    renderState();
+  }
+}
+
+async function applyPendingOperation() {
+  if (!experiment.pendingOperation || experiment.training || experiment.running) {
+    return;
+  }
+
+  const operation = experiment.pendingOperation;
+  const shouldResume = Boolean(operation.resume);
+  experiment.pendingOperation = null;
+  if (operation.type !== "media") {
+    experiment.pendingMediaName = null;
+  }
+
+  if (operation.type === "reset") {
+    await resetExperiment();
+  } else if (operation.type === "modelPreset") {
+    experiment.selectedModelKey = operation.modelKey;
+    experiment.modelConfig = cloneModelConfig(MODEL_PRESETS[operation.modelKey]);
+    await rebuildForModelConfig({ rebuildFeature: true, resetMetrics: true });
+  } else if (operation.type === "modelSetting") {
+    await rebuildForModelConfig(operation.options);
+  } else if (operation.type === "featureTensorSetting") {
+    await refreshFeatureTensorForConfig(operation.options);
+  } else if (operation.type === "targetSize") {
+    await changeTargetSize(operation.size);
+  } else if (operation.type === "media") {
+    await selectMedia(operation.mediaName, {
+      resetModel: operation.resetModel,
+      force: true,
+    });
+  } else if (operation.type === "webcamStart") {
+    await startWebcam();
+  } else if (operation.type === "webcamStop") {
+    stopWebcam({ keepResumeMode: false });
+  }
+
+  await forceWeightRender();
+
+  if (shouldResume && experiment.ready && experiment.targetTensor && !experiment.running && !experiment.training) {
+    runContinuous();
+  }
+}
+
 function currentModelName() {
   if (MODEL_PRESETS[experiment.selectedModelKey]) {
     return MODEL_PRESETS[experiment.selectedModelKey].label;
@@ -1173,7 +1508,11 @@ function syncCurrentLearningRate() {
 
 async function rebuildForModelConfig(options = {}) {
   const { rebuildFeature = true, resetMetrics = true } = options;
-  if (experiment.running || experiment.training) {
+  if (isOperationBusy()) {
+    queuePendingOperation({
+      type: "modelSetting",
+      options: { rebuildFeature, resetMetrics },
+    });
     return;
   }
 
@@ -1203,6 +1542,42 @@ async function rebuildForModelConfig(options = {}) {
   }
 }
 
+async function refreshFeatureTensorForConfig(options = {}) {
+  const { resetMetrics = false } = options;
+  if (isOperationBusy()) {
+    queuePendingOperation({
+      type: "featureTensorSetting",
+      options: { resetMetrics },
+    });
+    return;
+  }
+
+  hideError();
+  experiment.training = true;
+  if (resetMetrics) {
+    resetRunMetrics();
+  }
+  renderState();
+
+  try {
+    if (experiment.ready) {
+      disposeFeatureTensor();
+      buildFeatureTensor();
+      if (experiment.variables.length === 0) {
+        buildModel();
+      }
+      if (experiment.targetTensor) {
+        await publishPreview(performance.now(), { appendHistory: false });
+      }
+    }
+  } catch (error) {
+    showError(String(error));
+  } finally {
+    experiment.training = false;
+    renderState();
+  }
+}
+
 function clampLearningRates() {
   const config = currentModel();
   if (config.imageMinLearningRate > config.imageLearningRate) {
@@ -1211,24 +1586,6 @@ function clampLearningRates() {
 }
 
 async function updateModelSetting(key, value) {
-  if (experiment.running || experiment.training) {
-    if (key === "streamLearningRate" || key === "imageLearningRate" || key === "imageMinLearningRate") {
-      const config = currentModel();
-      if (config[key] !== value) {
-        experiment.selectedModelKey = "custom";
-        experiment.modelConfig = {
-          ...config,
-          [key]: value,
-        };
-        clampLearningRates();
-        if (isStreamTarget() || key !== "streamLearningRate") {
-          syncCurrentLearningRate();
-        }
-      }
-    }
-    renderState();
-    return;
-  }
   const config = currentModel();
   if (config[key] === value) {
     return;
@@ -1241,7 +1598,26 @@ async function updateModelSetting(key, value) {
   };
   clampLearningRates();
 
+  if (key === "gaborAtomWidth") {
+    if (currentModel().featureType !== "gabor") {
+      renderState();
+      return;
+    }
+    await refreshFeatureTensorForConfig({ resetMetrics: false });
+    return;
+  }
+
   if (STRUCTURAL_MODEL_KEYS.has(key)) {
+    if (isOperationBusy()) {
+      queuePendingOperation({
+        type: "modelSetting",
+        options: {
+          rebuildFeature: key === "featureDim" || key === "featureType",
+          resetMetrics: true,
+        },
+      });
+      return;
+    }
     await rebuildForModelConfig({
       rebuildFeature: key === "featureDim" || key === "featureType",
       resetMetrics: true,
@@ -1260,8 +1636,12 @@ async function selectMedia(mediaName, options = {}) {
     return;
   }
 
-  if ((experiment.training || experiment.running) && !force) {
-    experiment.pendingMediaName = mediaInfo.name;
+  if (isOperationBusy() && !force) {
+    queuePendingOperation({
+      type: "media",
+      mediaName: mediaInfo.name,
+      resetModel,
+    });
     renderState();
     return;
   }
@@ -1322,7 +1702,8 @@ async function selectMedia(mediaName, options = {}) {
 }
 
 async function resetExperiment() {
-  if (experiment.training || experiment.running) {
+  if (isOperationBusy()) {
+    queuePendingOperation({ type: "reset" });
     return;
   }
 
@@ -1362,17 +1743,25 @@ async function resetExperiment() {
 }
 
 async function changeModelPreset(modelKey) {
-  if (!MODEL_PRESETS[modelKey] || modelKey === experiment.selectedModelKey || experiment.running || experiment.training) {
+  if (!MODEL_PRESETS[modelKey] || modelKey === experiment.selectedModelKey) {
     return;
   }
 
   experiment.selectedModelKey = modelKey;
   experiment.modelConfig = cloneModelConfig(MODEL_PRESETS[modelKey]);
+  if (isOperationBusy()) {
+    queuePendingOperation({ type: "modelPreset", modelKey });
+    return;
+  }
   await rebuildForModelConfig({ rebuildFeature: true, resetMetrics: true });
 }
 
 async function changeTargetSize(size) {
-  if (!TARGET_SIZES.includes(size) || size === currentTargetSize() || experiment.running || experiment.training) {
+  if (!TARGET_SIZES.includes(size) || size === currentTargetSize()) {
+    return;
+  }
+  if (isOperationBusy()) {
+    queuePendingOperation({ type: "targetSize", size });
     return;
   }
 
@@ -1380,22 +1769,21 @@ async function changeTargetSize(size) {
   experiment.targetSize = size;
   configureCanvases();
   disposeFeatureTensor();
-  resetRunMetrics();
   experiment.training = true;
   renderState();
 
   try {
     if (experiment.ready) {
-      buildModel();
+      buildFeatureTensor();
+      if (experiment.variables.length === 0) {
+        buildModel();
+      }
       if (isWebcamActive()) {
-        resetOptimizerState({ stream: true });
         await sampleWebcamTarget({ appendHistory: false, publish: true });
       } else if (isVideoTarget()) {
-        resetOptimizerState({ stream: true });
         await sampleVideoTarget({ appendHistory: false, publish: true });
       } else if (experiment.currentMedia) {
         await loadReferenceImage(experiment.currentMedia, true);
-        resetOptimizerState({ stream: false });
         await publishPreview(performance.now(), { appendHistory: false });
       } else {
         clearOutput();
@@ -1520,6 +1908,13 @@ function renderState() {
   timingValue.textContent = experiment.lastUpdateSeconds
     ? formatPreviewRate(experiment.lastUpdateSeconds)
     : "--";
+  weightsSummary.textContent = experiment.variables.length > 0
+    ? `${experiment.variables.length} tensors`
+    : "--";
+  weightsToggle.setAttribute("aria-expanded", String(experiment.weightsExpanded));
+  weightsContents.setAttribute("aria-hidden", String(!experiment.weightsExpanded));
+  weightsContents.inert = !experiment.weightsExpanded;
+  weightsPanel.classList.toggle("is-expanded", experiment.weightsExpanded);
 
   startButtonLabel.textContent = experiment.running ? "Pause" : canResume ? "Resume" : "Start";
   startButton.setAttribute("aria-label", startButtonLabel.textContent);
@@ -1530,10 +1925,10 @@ function renderState() {
     ? experiment.stopRequested
     : !experiment.ready || experiment.training || !experiment.targetTensor;
   stepButton.disabled = !experiment.ready || experiment.running || experiment.training || isVideoSelected() || !experiment.targetTensor;
-  resetButton.disabled = !experiment.ready || experiment.running || experiment.training || !experiment.targetTensor;
+  resetButton.disabled = !experiment.ready || !experiment.targetTensor;
   webcamButton.textContent = webcamActive ? "Stop webcam" : "Use webcam";
   webcamButton.classList.toggle("is-active", webcamActive);
-  webcamButton.disabled = !experiment.ready || (!webcamActive && (experiment.running || experiment.training));
+  webcamButton.disabled = !experiment.ready;
   setMediaButtonsDisabled(experiment.mediaItems.length === 0);
   renderResolutionOptions();
   renderMediaOptions();
@@ -1560,7 +1955,7 @@ function renderResolutionOptions() {
     const selected = Number.parseInt(button.dataset.size, 10) === currentTargetSize();
     button.classList.toggle("is-selected", selected);
     button.setAttribute("aria-checked", String(selected));
-    button.disabled = experiment.running || experiment.training;
+    button.disabled = false;
   }
 }
 
@@ -1624,7 +2019,7 @@ function renderModelOptions() {
     const selected = button.dataset.model === experiment.selectedModelKey;
     button.classList.toggle("is-selected", selected);
     button.setAttribute("aria-checked", String(selected));
-    button.disabled = experiment.running || experiment.training;
+    button.disabled = false;
   }
 }
 
@@ -1641,6 +2036,8 @@ function renderModelSettings() {
   hiddenLayersSelect.value = String(config.layers);
   featureDimSelect.value = String(config.featureDim);
   featureTypeSelect.value = config.featureType || "fourier";
+  gaborAtomWidthSlider.value = String(config.gaborAtomWidth ?? 0.1);
+  gaborAtomWidthValue.textContent = formatAtomWidth(config.gaborAtomWidth ?? 0.1);
   activationSelect.value = config.activation || "silu";
   rmsNormToggle.checked = Boolean(config.rmsNorm);
 
@@ -1651,17 +2048,18 @@ function renderModelSettings() {
   imageEndLrValue.textContent = formatLearningRate(config.imageMinLearningRate);
   videoLrValue.textContent = formatLearningRate(config.streamLearningRate);
 
-  const disabled = experiment.running || experiment.training;
   modelToggle.disabled = false;
+  modelField.classList.toggle("is-gabor", config.featureType === "gabor");
   for (const control of [
     hiddenDimSelect,
     hiddenLayersSelect,
     featureDimSelect,
     featureTypeSelect,
+    gaborAtomWidthSlider,
     activationSelect,
     rmsNormToggle,
   ]) {
-    control.disabled = disabled;
+    control.disabled = false;
   }
   imageStartLrSlider.disabled = !experiment.ready;
   imageEndLrSlider.disabled = !experiment.ready;
@@ -1815,6 +2213,12 @@ modelToggle.addEventListener("click", () => {
   renderState();
 });
 
+weightsToggle.addEventListener("click", () => {
+  experiment.weightsExpanded = !experiment.weightsExpanded;
+  renderState();
+  queueWeightRender();
+});
+
 hiddenDimSelect.addEventListener("change", () => {
   updateModelSetting("hiddenDim", Number.parseInt(hiddenDimSelect.value, 10));
 });
@@ -1829,6 +2233,10 @@ featureDimSelect.addEventListener("change", () => {
 
 featureTypeSelect.addEventListener("change", () => {
   updateModelSetting("featureType", featureTypeSelect.value);
+});
+
+gaborAtomWidthSlider.addEventListener("input", () => {
+  updateModelSetting("gaborAtomWidth", Number.parseFloat(gaborAtomWidthSlider.value));
 });
 
 activationSelect.addEventListener("change", () => {
