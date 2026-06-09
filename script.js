@@ -499,6 +499,18 @@ function resetOptimizerState(options = {}) {
   experiment.optimizer = tf.train.adam(experiment.currentLearningRate);
 }
 
+function setOptimizerLearningRate(value) {
+  experiment.currentLearningRate = value;
+  if (!experiment.optimizer) {
+    return;
+  }
+  if (typeof experiment.optimizer.setLearningRate === "function") {
+    experiment.optimizer.setLearningRate(value);
+  } else if ("learningRate" in experiment.optimizer) {
+    experiment.optimizer.learningRate = value;
+  }
+}
+
 function learningRateForEpoch() {
   const config = currentModel();
   if (isStreamTarget()) {
@@ -546,10 +558,7 @@ function trainOneEpoch() {
 
   experiment.epoch += 1;
   experiment.optimizerEpoch += 1;
-  experiment.currentLearningRate = learningRateForEpoch();
-  if (typeof experiment.optimizer.setLearningRate === "function") {
-    experiment.optimizer.setLearningRate(experiment.currentLearningRate);
-  }
+  setOptimizerLearningRate(learningRateForEpoch());
 }
 
 function updateVideoAverage(loss, psnr) {
@@ -1159,13 +1168,7 @@ function currentModelName() {
 }
 
 function syncCurrentLearningRate() {
-  if (!experiment.optimizer) {
-    return;
-  }
-  experiment.currentLearningRate = learningRateForEpoch();
-  if (typeof experiment.optimizer.setLearningRate === "function") {
-    experiment.optimizer.setLearningRate(experiment.currentLearningRate);
-  }
+  setOptimizerLearningRate(learningRateForEpoch());
 }
 
 async function rebuildForModelConfig(options = {}) {
